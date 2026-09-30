@@ -1,0 +1,1 @@
+"""Subscription CLI browser adapters."""

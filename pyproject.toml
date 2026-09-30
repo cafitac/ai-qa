@@ -2,7 +2,7 @@
 name = "ai-qa"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["PyYAML>=6.0", "jsonschema[format-nongpl]>=4.23"]
+dependencies = ["playwright>=1.49", "PyYAML>=6.0", "jsonschema[format-nongpl]>=4.23"]
 [project.scripts]
 aiqa = "aiqa.cli:main"
 [build-system]

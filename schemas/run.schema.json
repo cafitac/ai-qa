@@ -39,6 +39,7 @@
         "login_required",
         "invalid_descriptor",
         "invalid_scenarios",
+        "source_unavailable",
         "no_scenarios"
       ]
     },

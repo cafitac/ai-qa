@@ -1,0 +1,237 @@
+{
+  "type": "object",
+  "properties": {
+    "apiVersion": {
+      "const": "ai-qa/v1"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{1,30}-[0-9]{8}T[0-9]{6}Z(?![\\s\\S])"
+    },
+    "environment": {
+      "type": "string"
+    },
+    "commits": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{40}(?![\\s\\S])"
+      }
+    },
+    "state": {
+      "enum": [
+        "CREATED",
+        "PREFLIGHT",
+        "RUNNING",
+        "COMPLETED",
+        "REFUSED",
+        "ABORTED"
+      ]
+    },
+    "refusal_reason": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        null,
+        "environment_not_ready",
+        "login_required",
+        "invalid_descriptor",
+        "invalid_scenarios",
+        "no_scenarios"
+      ]
+    },
+    "agent": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "fake",
+            "claude",
+            "codex"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "model"
+      ],
+      "additionalProperties": false
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "max_scenarios": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_turns": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "scenario_timeout": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*[smhd](?![\\s\\S])",
+          "maxLength": 10
+        },
+        "protocol_retries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "pid": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "finished_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "apiVersion": {
+            "const": "ai-qa/v1"
+          },
+          "scenario_id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{1,20}/[a-z][a-z0-9-]{1,40}(?![\\s\\S])"
+          },
+          "status": {
+            "enum": [
+              "PASSED",
+              "FAILED",
+              "SKIPPED"
+            ]
+          },
+          "reason": {
+            "enum": [
+              null,
+              "timeout",
+              "turn_cap",
+              "agent_protocol",
+              "no_evidence",
+              "out_of_scope",
+              "agent_error",
+              "assertion"
+            ]
+          },
+          "summary": {
+            "type": "string"
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "expect": {
+                  "type": "string"
+                },
+                "ok": {
+                  "type": "boolean"
+                },
+                "observed": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "expect",
+                "ok",
+                "observed"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "enum": [
+                    "screenshot",
+                    "log",
+                    "http"
+                  ]
+                },
+                "uri": {
+                  "type": "string",
+                  "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+(?![\\s\\S])"
+                }
+              },
+              "required": [
+                "type",
+                "uri"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "turns": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "seconds": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "apiVersion",
+          "scenario_id",
+          "status",
+          "reason",
+          "summary",
+          "checks",
+          "evidence",
+          "turns",
+          "seconds"
+        ],
+        "additionalProperties": false,
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      }
+    },
+    "abort_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "apiVersion",
+    "id",
+    "environment",
+    "commits",
+    "state",
+    "refusal_reason",
+    "agent",
+    "budget",
+    "pid",
+    "started_at",
+    "finished_at",
+    "results"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

@@ -1,0 +1,176 @@
+{
+  "type": "object",
+  "properties": {
+    "apiVersion": {
+      "const": "preview-hub/v1"
+    },
+    "kind": {
+      "const": "EnvironmentDescriptor"
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{1,30}(?![\\s\\S])"
+    },
+    "state": {
+      "enum": [
+        "REQUESTED",
+        "RESOLVING",
+        "BUILDING",
+        "STARTING",
+        "READY",
+        "UPDATING",
+        "FAILED",
+        "DELETING",
+        "DELETED"
+      ]
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "entryUrl": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "proxy": {
+      "type": "object",
+      "properties": {
+        "hostPort": {
+          "type": "integer"
+        },
+        "inNetworkAddress": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "hostPort",
+        "inNetworkAddress"
+      ],
+      "additionalProperties": false
+    },
+    "services": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{1,20}(?![\\s\\S])"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "commit": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}(?![\\s\\S])"
+          },
+          "publicUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "health": {
+            "enum": [
+              "UNKNOWN",
+              "STARTING",
+              "HEALTHY",
+              "UNHEALTHY"
+            ]
+          },
+          "localUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "repo",
+          "ref",
+          "commit",
+          "publicUrl",
+          "health"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "testAccounts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "username",
+          "password"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "readiness": {
+      "type": "object",
+      "properties": {
+        "allHealthy": {
+          "type": "boolean"
+        },
+        "checkedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "allHealthy",
+        "checkedAt"
+      ],
+      "additionalProperties": false
+    },
+    "access": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "const": "cloudflare-access"
+        }
+      },
+      "required": [
+        "provider"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "name",
+    "state",
+    "createdAt",
+    "expiresAt",
+    "entryUrl",
+    "proxy",
+    "services",
+    "testAccounts",
+    "readiness"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

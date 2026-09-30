@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import math
 from collections.abc import Callable
 from dataclasses import replace
@@ -10,7 +9,15 @@ from typing import Any, cast
 from urllib.parse import urljoin
 
 from .clock import default_clock
-from .contracts import Config, InvalidInput, Scenario, duration, url_origin, validate
+from .contracts import (
+    Config,
+    InvalidInput,
+    Scenario,
+    duration,
+    load_json,
+    url_origin,
+    validate,
+)
 from .ports import (
     AgentContext,
     AgentOutput,
@@ -21,7 +28,8 @@ from .ports import (
     VerdictGate,
 )
 from .run import Budget, Evidence, Run, ScenarioResult
-from .storage import RunStorage, atomic_write, write_json
+from .screenshots import is_screenshot
+from .storage import RunStorage, atomic_write, below_directory, write_json
 
 
 class BoundaryError(RuntimeError):
@@ -40,6 +48,7 @@ def boundary_call[T](boundary: str, call: Callable[[], T]) -> T:
             "invalid_descriptor",
             "invalid_scenarios",
             "no_scenarios",
+            "source_unavailable",
         ):
             raise BoundaryError(boundary, ValueError("Invalid refusal reason")) from exc
         raise
@@ -48,8 +57,8 @@ def boundary_call[T](boundary: str, call: Callable[[], T]) -> T:
 
 
 class Refused(RuntimeError):
-    def __init__(self, reason: str):
-        super().__init__(reason)
+    def __init__(self, reason: str, message: str | None = None):
+        super().__init__(message or reason)
         self.reason = reason
 
 
@@ -86,17 +95,16 @@ def evidence_uri(
     ):
         raise ValueError("Invalid evidence URI")
     uri.encode("utf-8")
-    try:
-        (run_dir / uri).resolve().relative_to(scenario_dir.resolve())
-    except (ValueError, RuntimeError) as exc:
-        raise ValueError("Evidence outside scenario directory") from exc
+    path = run_dir / uri
+    if not below_directory(path, scenario_dir):
+        raise ValueError("Evidence outside scenario directory or symlinked")
     if not (run_dir / uri).is_file():
         raise ValueError("Evidence is not a regular file")
     return uri
 
 
 class JsonVerdictGate:
-    """QU1 placeholder: JSON status only; QU2 supplies evidence and security gates."""
+    """Compatibility name for the full QU2 verdict gate."""
 
     def accept(
         self,
@@ -106,50 +114,9 @@ class JsonVerdictGate:
         files: tuple[Path, ...],
         caps: AgentContext,
     ) -> ScenarioResult:
-        try:
-            raw: object = json.loads(output.result_text)
-            if not isinstance(raw, dict):
-                raise TypeError("Invalid result")
-            value = cast(dict[str, Any], raw)
-            if value.get("status") not in (
-                "PASSED",
-                "FAILED",
-            ):
-                raise ValueError("Invalid status")
-            summary = value.get("summary", "")
-            checks = value.get("checks", [])
-            if (
-                not isinstance(summary, str)
-                or len(summary) > 500
-                or not isinstance(checks, list)
-            ):
-                raise ValueError("Invalid result")
-            agent_text(summary)
-            for check in cast(list[object], checks):
-                if not isinstance(check, dict):
-                    raise TypeError("Invalid check")
-                check_data = cast(dict[str, object], check)
-                agent_text(check_data.get("expect"))
-                agent_text(check_data.get("observed"))
-            result = ScenarioResult(
-                scenario.qualified_id,
-                value["status"],
-                summary,
-                checks=tuple(cast(list[dict[str, Any]], checks)),
-                turns=output.turns,
-                seconds=output.seconds,
-            )
-            result.as_dict()
-            return result
-        except (ValueError, TypeError, RecursionError):
-            return ScenarioResult(
-                scenario.qualified_id,
-                "FAILED",
-                "agent_protocol",
-                "agent_protocol",
-                turns=output.turns,
-                seconds=output.seconds,
-            )
+        from .gate import VerdictGate as FullVerdictGate
+
+        return FullVerdictGate().accept(scenario, output, transcript, files, caps)
 
 
 def report(run: Run) -> dict[str, object]:
@@ -179,16 +146,17 @@ def report(run: Run) -> dict[str, object]:
     )
 
 
-def summary(run: Run | dict[str, Any]) -> str:
+def summary(run: Run | dict[str, Any], notes: tuple[str, ...] = ()) -> str:
     data = run.as_dict() if isinstance(run, Run) else run
     lines = [
         f"# {data['id']}",
         "",
         f"State: {data['state']}",
         "",
-        "| Scenario | Status | Summary |",
-        "| --- | --- | --- |",
     ]
+    if notes:
+        lines.extend([*notes, ""])
+    lines.extend(["| Scenario | Status | Summary |", "| --- | --- | --- |"])
     for r in data["results"]:
         text = r["summary"].replace("|", "\\|").replace("\n", " ")
         lines.append(f"| {r['scenario_id']} | {r['status']} | {text} |")
@@ -217,13 +185,33 @@ class RunScenarios:
         self.agent_runner = agent_runner
         self.config = config
         self.browser_session = browser_session
-        self.verdict_gate = verdict_gate or JsonVerdictGate()
+        from .gate import VerdictGate as FullVerdictGate
+
+        self.verdict_gate = verdict_gate or FullVerdictGate()
         self.agent_kind = agent_kind or config.agent_kind
         self.storage = RunStorage(config.runs_dir)
         self.last_run: Run | None = None
         self.persisted_run: dict[str, Any] | None = None
+        self.redaction_ran = False
 
     def execute(
+        self, environment: str, tags: tuple[str, ...] = (), only: tuple[str, ...] = ()
+    ) -> int:
+        cleanup_failed = False
+        try:
+            code = self._execute_guarded(environment, tags, only)
+        finally:
+            close = getattr(self.browser_session, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except OSError:
+                    print("aborted: BrowserCleanup: OSError")
+                    self._recover_aborted("BrowserCleanup: OSError")
+                    cleanup_failed = True
+        return 4 if cleanup_failed else code
+
+    def _execute_guarded(
         self, environment: str, tags: tuple[str, ...] = (), only: tuple[str, ...] = ()
     ) -> int:
         try:
@@ -265,9 +253,7 @@ class RunScenarios:
             except OSError:
                 pass
         try:
-            saved = validate(
-                "run", json.loads((path / "run.json").read_text(encoding="utf-8"))
-            )
+            saved = validate("run", load_json(path / "run.json"))
         except (OSError, ValueError, RecursionError):
             return
         saved["state"] = "ABORTED"
@@ -278,20 +264,21 @@ class RunScenarios:
         except (OSError, InvalidInput):
             # Use the state that is actually on disk, not the failed candidate.
             try:
-                saved = validate(
-                    "run", json.loads((path / "run.json").read_text(encoding="utf-8"))
-                )
+                saved = validate("run", load_json(path / "run.json"))
             except (OSError, ValueError, RecursionError):
                 return
-        self.persisted_run = self.storage.load(run.id)
+        self.persisted_run = self.storage.load(run.id, check_liveness=False)
         saved = self.persisted_run
         try:
             atomic_write(
                 path / "summary.md",
-                summary(saved),
+                summary(saved, self._redaction_notes()),
             )
         except OSError:
             pass
+
+    def _redaction_notes(self) -> tuple[str, ...]:
+        return ("Redaction: scanned attempt artifacts",) if self.redaction_ran else ()
 
     def _execute(
         self, environment: str, tags: tuple[str, ...], only: tuple[str, ...]
@@ -389,181 +376,215 @@ class RunScenarios:
                     )
                 else:
                     try:
-                        caps = AgentContext(
-                            folder,
-                            start_urls[scenario.qualified_id],
-                            tuple(
-                                sorted(
-                                    set(origins)
-                                    | {url_origin(f"https://{cfg.access_team_domain}")}
-                                )
-                            ),
-                            budget.max_turns,
-                            duration(scenario.timeout or budget.scenario_timeout),
-                            cfg.agent_model,
-                            state,
-                        )
-                        attempt = 0
-                        while True:
-                            attempt += 1
-                            output_dir = folder / f"attempt-{attempt}"
-                            output_dir.mkdir()
-                            caps = replace(caps, output_dir=output_dir)
-                            if agent_calls >= budget.max_agent_calls:
-                                raise RuntimeError("Agent call budget exhausted")
-                            agent_calls += 1
-                            output = boundary_call(
-                                "Agent",
-                                lambda scenario=scenario, caps=caps: (
-                                    self.agent_runner.run(scenario, caps)
-                                ),
-                            )
-                            try:
-                                if output.transcript_path is not None:
-                                    evidence_uri(
-                                        output.transcript_path.relative_to(
-                                            path
-                                        ).as_posix(),
-                                        path,
-                                        output_dir,
+                        try:
+                            caps = AgentContext(
+                                folder,
+                                start_urls[scenario.qualified_id],
+                                tuple(
+                                    sorted(
+                                        set(origins)
+                                        | {
+                                            url_origin(
+                                                f"https://{cfg.access_team_domain}"
+                                            )
+                                        }
                                     )
-                                valid_transcript = True
-                            except (
-                                ValueError,
-                                TypeError,
-                                AttributeError,
-                                RuntimeError,
-                            ):
-                                valid_transcript = False
-                            if (
-                                not valid_transcript
-                                or type(output.turns) is not int
-                                or not 0 <= output.turns <= 2**63 - 1
-                                or type(output.seconds) not in (int, float)
-                                or not 0 <= output.seconds <= 2**63 - 1
-                                or not math.isfinite(output.seconds)
-                                or type(output.exit_code) is not int
-                                or type(output.timed_out) is not bool
-                                or (
-                                    output.transcript_path is not None
-                                    and (
-                                        not isinstance(
+                                ),
+                                budget.max_turns,
+                                duration(scenario.timeout or budget.scenario_timeout),
+                                cfg.agent_model,
+                                state,
+                            )
+                            attempt = 0
+                            while True:
+                                attempt += 1
+                                output_dir = folder / f"attempt-{attempt}"
+                                output_dir.mkdir()
+                                caps = replace(caps, output_dir=output_dir)
+                                if agent_calls >= budget.max_agent_calls:
+                                    raise RuntimeError("Agent call budget exhausted")
+                                agent_calls += 1
+                                output = boundary_call(
+                                    "Agent",
+                                    lambda scenario=scenario, caps=caps: (
+                                        self.agent_runner.run(scenario, caps)
+                                    ),
+                                )
+                                try:
+                                    if output.transcript_path is not None:
+                                        evidence_uri(
+                                            output.transcript_path.relative_to(
+                                                path
+                                            ).as_posix(),
+                                            path,
+                                            output_dir,
+                                        )
+                                    valid_transcript = True
+                                except (
+                                    ValueError,
+                                    TypeError,
+                                    AttributeError,
+                                    RuntimeError,
+                                ):
+                                    valid_transcript = False
+                                if (
+                                    not valid_transcript
+                                    or type(output.turns) is not int
+                                    or not 0 <= output.turns <= 2**63 - 1
+                                    or type(output.seconds) not in (int, float)
+                                    or not 0 <= output.seconds <= 2**63 - 1
+                                    or not math.isfinite(output.seconds)
+                                    or type(output.exit_code) is not int
+                                    or type(output.timed_out) is not bool
+                                    or (
+                                        output.transcript_path is not None
+                                        and (
+                                            not isinstance(
+                                                cast(object, output.transcript_path),
+                                                Path,
+                                            )
+                                            or any(
+                                                0xD800 <= ord(c) <= 0xDFFF
+                                                for c in str(output.transcript_path)
+                                            )
+                                        )
+                                    )
+                                ):
+                                    output = AgentOutput(
+                                        "",
+                                        output.transcript_path
+                                        if isinstance(
                                             cast(object, output.transcript_path), Path
                                         )
-                                        or any(
-                                            0xD800 <= ord(c) <= 0xDFFF
-                                            for c in str(output.transcript_path)
-                                        )
+                                        else None,
                                     )
-                                )
-                            ):
-                                output = AgentOutput(
-                                    "",
-                                    output.transcript_path
-                                    if isinstance(
-                                        cast(object, output.transcript_path), Path
-                                    )
-                                    else None,
-                                )
-                                result = ScenarioResult(
-                                    scenario.qualified_id,
-                                    "FAILED",
-                                    "agent_protocol",
-                                    "agent_protocol",
-                                )
-                            else:
-                                reason = (
-                                    "timeout"
-                                    if output.timed_out
-                                    or output.seconds > caps.timeout_seconds
-                                    else "turn_cap"
-                                    if output.turns > caps.max_turns
-                                    else "agent_error"
-                                    if output.exit_code
-                                    else None
-                                )
-                                if reason:
                                     result = ScenarioResult(
                                         scenario.qualified_id,
                                         "FAILED",
-                                        reason,
-                                        reason,
-                                        turns=output.turns,
-                                        seconds=output.seconds,
+                                        "agent_protocol",
+                                        "agent_protocol",
                                     )
                                 else:
-                                    files = tuple(output_dir.iterdir())
-                                    try:
-                                        result = self.verdict_gate.accept(
-                                            scenario,
-                                            output,
-                                            output.transcript_path,
-                                            files,
-                                            caps,
-                                        )
-                                        result.as_dict()
-                                        if result.scenario_id != scenario.qualified_id:
-                                            raise ValueError(
-                                                "Invalid scenario identity"
-                                            )
-                                        agent_text(result.summary)
-                                        for item in result.evidence:
-                                            evidence_uri(
-                                                item.uri,
-                                                path,
-                                                output_dir,
-                                                item.type,
-                                                caps.allowed_origins,
-                                            )
-                                        for check in result.checks:
-                                            agent_text(check["expect"])
-                                            agent_text(check["observed"])
-                                    except OSError:
-                                        raise
-                                    except Exception:  # noqa: BLE001 - agent interpretation boundary
+                                    reason = (
+                                        "timeout"
+                                        if output.timed_out
+                                        else "turn_cap"
+                                        if output.turns > caps.max_turns
+                                        else "agent_error"
+                                        if output.exit_code
+                                        else None
+                                    )
+                                    if reason:
                                         result = ScenarioResult(
                                             scenario.qualified_id,
                                             "FAILED",
-                                            "agent_protocol",
-                                            "agent_protocol",
+                                            reason,
+                                            reason,
                                             turns=output.turns,
                                             seconds=output.seconds,
                                         )
-                            if result.reason == "agent_protocol" and retries:
-                                retries -= 1
-                                continue
-                            evidence = list(result.evidence)
-                            candidates = [
-                                (f, "screenshot") for f in output_dir.glob("*.png")
-                            ]
-                            if output.transcript_path is not None:
-                                candidates.append((output.transcript_path, "log"))
-                            for file, kind in candidates:
-                                try:
-                                    uri = evidence_uri(
-                                        file.relative_to(path).as_posix(),
-                                        path,
-                                        output_dir,
-                                    )
-                                except (
-                                    ValueError,
-                                    UnicodeError,
-                                    RuntimeError,
+                                    else:
+                                        files = tuple(output_dir.iterdir())
+                                        try:
+                                            result = self.verdict_gate.accept(
+                                                scenario,
+                                                output,
+                                                output.transcript_path,
+                                                files,
+                                                caps,
+                                            )
+                                            result.as_dict()
+                                            if (
+                                                result.scenario_id
+                                                != scenario.qualified_id
+                                            ):
+                                                raise ValueError(
+                                                    "Invalid scenario identity"
+                                                )
+                                            agent_text(result.summary)
+                                            for item in result.evidence:
+                                                evidence_uri(
+                                                    item.uri,
+                                                    path,
+                                                    output_dir,
+                                                    item.type,
+                                                    caps.allowed_origins,
+                                                )
+                                            for check in result.checks:
+                                                agent_text(check["expect"])
+                                                agent_text(check["observed"])
+                                        except OSError:
+                                            raise
+                                        except Exception:  # noqa: BLE001 - agent interpretation boundary
+                                            result = ScenarioResult(
+                                                scenario.qualified_id,
+                                                "FAILED",
+                                                "agent_protocol",
+                                                "agent_protocol",
+                                                turns=output.turns,
+                                                seconds=output.seconds,
+                                            )
+                                from .redact import Redactor
+
+                                result = Redactor.from_state(
+                                    state, cfg.access_team_domain
+                                ).apply(result, output_dir, path)
+                                if (
+                                    result.reason == "agent_error"
+                                    and (output_dir / "redacted.log").exists()
                                 ):
+                                    break
+                                if result.reason == "agent_protocol" and retries:
+                                    retries -= 1
                                     continue
-                                if Evidence(kind, uri) not in evidence:
-                                    evidence.append(Evidence(kind, uri))
-                            result = ScenarioResult(
-                                result.scenario_id,
-                                result.status,
-                                result.summary,
-                                result.reason,
-                                result.checks,
-                                tuple(evidence),
-                                result.turns,
-                                result.seconds,
+                                evidence = list(result.evidence)
+                                candidates = [
+                                    (f, "screenshot")
+                                    for f in output_dir.rglob("*")
+                                    if is_screenshot(f)
+                                ]
+                                if output.transcript_path is not None:
+                                    candidates.append((output.transcript_path, "log"))
+                                for file, kind in candidates:
+                                    try:
+                                        uri = evidence_uri(
+                                            file.relative_to(path).as_posix(),
+                                            path,
+                                            output_dir,
+                                        )
+                                    except (
+                                        ValueError,
+                                        UnicodeError,
+                                        RuntimeError,
+                                    ):
+                                        continue
+                                    if Evidence(kind, uri) not in evidence:
+                                        evidence.append(Evidence(kind, uri))
+                                result = ScenarioResult(
+                                    result.scenario_id,
+                                    result.status,
+                                    result.summary,
+                                    result.reason,
+                                    result.checks,
+                                    tuple(evidence),
+                                    result.turns,
+                                    result.seconds,
+                                )
+                                break
+                        finally:
+                            from .redact import Redactor
+
+                            redactor = Redactor.from_state(
+                                state, cfg.access_team_domain
                             )
-                            break
+                            for attempt_dir in folder.glob("attempt-*"):
+                                if (
+                                    below_directory(attempt_dir, folder)
+                                    and attempt_dir.is_dir()
+                                    and any(attempt_dir.iterdir())
+                                ):
+                                    redactor.scan(attempt_dir)
+                                    self.redaction_ran = True
                     except OSError:
                         result = ScenarioResult(
                             scenario.qualified_id,
@@ -571,6 +592,11 @@ class RunScenarios:
                             "agent_error",
                             "agent_error",
                         )
+                from .redact import Redactor
+
+                result = Redactor.from_state(state, cfg.access_team_domain).apply(
+                    result, folder, path
+                )
                 run.record(result)
                 write_json(folder / "result.json", result.as_dict())
                 self.storage.save(run)
@@ -578,32 +604,70 @@ class RunScenarios:
             run.transition("COMPLETED", finished_at=str(payload["finishedAt"]))
             self.storage.save(run)
             write_json(path / "report.json", payload)
-            atomic_write(path / "summary.md", summary(run))
+            atomic_write(
+                path / "summary.md",
+                summary(
+                    run,
+                    tuple(getattr(self.scenario_source, "notes", ()))
+                    + self._redaction_notes(),
+                ),
+            )
             return int(any(r.status == "FAILED" for r in run.results))
         except Refused as exc:
             if run.state != "PREFLIGHT":
+                run.abort_reason = exc.reason
+                print(f"aborted: {exc.reason}")
                 run.transition("ABORTED")
                 self.storage.save(run)
-                atomic_write(path / "summary.md", summary(run))
+                atomic_write(
+                    path / "summary.md",
+                    summary(
+                        run,
+                        tuple(getattr(self.scenario_source, "notes", ()))
+                        + self._redaction_notes(),
+                    ),
+                )
                 return 4
+            print(str(exc))
             run.refusal_reason = exc.reason
             run.transition("REFUSED")
             self.storage.save(run)
-            atomic_write(path / "summary.md", summary(run))
+            atomic_write(
+                path / "summary.md",
+                summary(
+                    run,
+                    tuple(getattr(self.scenario_source, "notes", ()))
+                    + self._redaction_notes(),
+                ),
+            )
             return 2 if exc.reason in ("invalid_scenarios", "invalid_descriptor") else 3
         except InvalidInput as exc:
             if run.state == "PREFLIGHT":
                 run.refusal_reason = input_reason
                 run.transition("REFUSED")
                 self.storage.save(run)
-                atomic_write(path / "summary.md", summary(run))
+                atomic_write(
+                    path / "summary.md",
+                    summary(
+                        run,
+                        tuple(getattr(self.scenario_source, "notes", ()))
+                        + self._redaction_notes(),
+                    ),
+                )
                 return 2
             run.abort_reason = type(exc).__name__
             print(f"aborted: {run.abort_reason}")
             run.transition("ABORTED")
             (path / "report.json").unlink(missing_ok=True)
             self.storage.save(run)
-            atomic_write(path / "summary.md", summary(run))
+            atomic_write(
+                path / "summary.md",
+                summary(
+                    run,
+                    tuple(getattr(self.scenario_source, "notes", ()))
+                    + self._redaction_notes(),
+                ),
+            )
             return 4
         except OSError:
             raise

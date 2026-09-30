@@ -8,6 +8,7 @@ from .contracts import (
     EnvironmentDescriptor,
     InvalidInput,
     Scenario,
+    load_json,
     load_yaml,
     parse_scenarios,
 )
@@ -21,15 +22,7 @@ class FileDescriptorSource:
 
     def get(self, environment: str) -> EnvironmentDescriptor | None:
         if self.path.suffix.lower() == ".json":
-            try:
-                value = json.loads(self.path.read_text(encoding="utf-8"))
-            except (
-                OSError,
-                UnicodeDecodeError,
-                ValueError,
-                RecursionError,
-            ) as exc:
-                raise InvalidInput(f"Cannot read input: {self.path}") from exc
+            value = load_json(self.path)
         elif self.path.suffix.lower() in (".yaml", ".yml"):
             value = load_yaml(self.path)
         else:
@@ -78,12 +71,16 @@ class FakeAgentRunner:
             return self.outputs.pop(0)
         path = context.output_dir / "agent.jsonl"
         atomic_write(path, '{"development_fake": true}\n')
+        (context.output_dir / "final.png").write_bytes(b"\x89PNG\r\n\x1a\n")
         return AgentOutput(
             json.dumps(
                 {
                     "status": self.statuses.get(scenario.qualified_id, "PASSED"),
                     "summary": "Development fake result; no browser checks performed",
-                    "checks": [],
+                    "checks": [
+                        {"index": i, "ok": True, "observed": e}
+                        for i, e in enumerate(scenario.expect)
+                    ],
                 }
             ),
             path,

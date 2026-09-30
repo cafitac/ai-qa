@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import re
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -226,7 +227,7 @@ def test_budget_skips(setup_run):
     "output,reason",
     [
         (AgentOutput('{"status":"PASSED"}', turns=26), "turn_cap"),
-        (AgentOutput('{"status":"PASSED"}', seconds=301), "timeout"),
+        (AgentOutput('{"status":"PASSED"}', seconds=301, timed_out=True), "timeout"),
         (AgentOutput('{"status":"PASSED"}', exit_code=1), "agent_error"),
     ],
 )
@@ -308,9 +309,6 @@ def test_atomic_collision_interrupted(tmp_path, monkeypatch):
 def test_cli(setup_run, monkeypatch, capsys):
     d, s, cfg = setup_run
     monkeypatch.setenv("AIQA_RUNS_DIR", str(cfg.runs_dir))
-    assert main(["run", "demo", "--agent", "claude"]) == 2
-    assert "not available yet" in capsys.readouterr().out
-    assert main(["run", "demo", "--agent", "codex"]) == 2
     assert main(["run", "demo", "--agent", "fake"]) == 2
     assert main(["show"]) == 2
     assert (
@@ -498,7 +496,7 @@ def test_latest_across_environments(tmp_path, monkeypatch, capsys):
     (foreign / "run.json").write_text("{}")
     assert storage.list() == ["alpha-20260930T000000Z", "zulu-20260929T000000Z"]
     monkeypatch.setenv("AIQA_RUNS_DIR", str(tmp_path))
-    assert main(["show"]) == 5
+    assert main(["show"]) == 4
     assert "alpha-20260930T000000Z" in capsys.readouterr().out
 
 
@@ -757,7 +755,7 @@ def test_show_represents_run_exit_code(
 
 @pytest.mark.parametrize("completed_saved", [False, True])
 def test_failed_abort_save_uses_actual_disk_state(
-    setup_run, monkeypatch, completed_saved
+    setup_run, monkeypatch, completed_saved, capsys
 ):
     import aiqa.usecases as module
 
@@ -779,18 +777,20 @@ def test_failed_abort_save_uses_actual_disk_state(
 
     monkeypatch.setattr(uc.storage, "save", fail_completion)
     monkeypatch.setattr(module, "write_json", fail_recovery)
-    assert uc.execute("demo") == 4
+    assert run_cli(setup_run, monkeypatch, uc) == 4
+    assert ": INTERRUPTED" in capsys.readouterr().out
     folder = setup_run[2].runs_dir / uc.last_run.id
     saved = json.loads((folder / "run.json").read_text())
     assert saved["state"] == ("COMPLETED" if completed_saved else "RUNNING")
     assert not (folder / "report.json").exists()
+    monkeypatch.setattr("aiqa.storage.pid_alive", lambda pid: False)
     if completed_saved:
         assert "State: INTERRUPTED" in (folder / "summary.md").read_text()
         assert uc.persisted_run["state"] == "INTERRUPTED"
         monkeypatch.setenv("AIQA_RUNS_DIR", str(setup_run[2].runs_dir))
         assert main(["show"]) == 4
     else:
-        assert "State: RUNNING" in (folder / "summary.md").read_text()
+        assert "State: INTERRUPTED" in (folder / "summary.md").read_text()
 
 
 def run_cli(setup_run, monkeypatch, uc):
@@ -933,13 +933,13 @@ def test_retry_evidence_isolation(setup_run):
         def run(self, scenario, context):
             self.calls += 1
             name = "stale.png" if self.calls == 1 else "final.png"
-            (context.output_dir / name).write_bytes(b"synthetic")
+            (context.output_dir / name).write_bytes(b"\x89PNG\r\n\x1a\n")
             transcript = context.output_dir / "agent.jsonl"
-            transcript.write_text(str(self.calls))
+            transcript.write_text(json.dumps({"call": self.calls}))
             return AgentOutput(
                 "bad"
                 if self.calls == 1
-                else '{"status":"PASSED","summary":"ok","checks":[]}',
+                else '{"status":"PASSED","summary":"ok","checks":[{"index":0,"ok":true,"observed":"Visible"}]}',
                 transcript,
             )
 
@@ -958,7 +958,7 @@ def test_retry_evidence_isolation(setup_run):
     )
     folder = setup_run[2].runs_dir / uc.last_run.id / "scenarios/web__test-0"
     assert (folder / "attempt-1/stale.png").exists()
-    assert (folder / "attempt-1/agent.jsonl").read_text() == "1"
+    assert json.loads((folder / "attempt-1/agent.jsonl").read_text()) == {"call": 1}
 
 
 @pytest.mark.parametrize(
@@ -1125,7 +1125,7 @@ def test_bad_agent_strings_are_scenario_local(setup_run, field, text):
     value = {
         "status": "PASSED",
         "summary": "ok",
-        "checks": [{"expect": "Visible", "ok": True, "observed": "Visible"}],
+        "checks": [{"index": 0, "ok": True, "observed": "Visible"}],
     }
     if field == "summary":
         value[field] = text
@@ -1165,15 +1165,17 @@ def test_unexpected_gate_interpretation_is_scenario_local(setup_run, error):
 def test_agent_text_allows_utf8_newlines_tabs_and_limit(setup_run):
     text = "한\n\t" + "x" * 497
     value = {
-        "status": "PASSED",
+        "status": "FAILED",
         "summary": text,
-        "checks": [{"expect": text, "ok": True, "observed": text}],
+        "checks": [{"index": 0, "ok": True, "observed": text}],
     }
     uc, _ = usecase(setup_run, [AgentOutput(json.dumps(value))])
-    assert uc.execute("demo") == 0
+    assert uc.execute("demo") == 1
     stored = uc.storage.load(uc.last_run.id)
     assert stored["results"][0]["summary"] == text
-    assert stored["results"][0]["checks"] == value["checks"]
+    assert stored["results"][0]["checks"] == [
+        {"expect": "Visible", "ok": True, "observed": text}
+    ]
 
 
 def test_storage_escapes_unencodable_text(tmp_path):
@@ -1352,6 +1354,8 @@ def test_show_live_run_returns_in_progress(tmp_path, monkeypatch, capsys, state)
         run.transition("PREFLIGHT")
     if state == "RUNNING":
         run.start({"web": "a" * 40}, ["web/test-0"])
+    run.pid = os.getpid() + 1
+    monkeypatch.setattr("aiqa.storage.pid_alive", lambda pid: True)
     storage.save(run)
     monkeypatch.setenv("AIQA_RUNS_DIR", str(tmp_path))
     assert main(["show"]) == 5
@@ -1434,7 +1438,12 @@ def test_agent_attempt_name_does_not_collide_with_retry(setup_run, directory):
                 (collision / "nested.txt").write_text("synthetic")
             else:
                 collision.write_text("synthetic")
-            return AgentOutput("bad" if self.calls == 1 else '{"status":"PASSED"}')
+            (context.output_dir / "final.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+            return AgentOutput(
+                "bad"
+                if self.calls == 1
+                else '{"status":"PASSED","summary":"ok","checks":[{"index":0,"ok":true,"observed":"Visible"}]}'
+            )
 
     class Gate(JsonVerdictGate):
         def accept(self, scenario, output, transcript, files, caps):
@@ -1486,9 +1495,13 @@ def test_agent_file_errors_fail_only_scenario(setup_run, monkeypatch, operation)
     if operation == "resolve":
         monkeypatch.setattr(Path, "resolve", fail_resolve)
     uc, _ = usecase(setup_run, verdict_gate=Gate())
-    assert uc.execute("demo") == 1
+    # Artifact containment is lexical below the resolved storage root; it no longer
+    # resolves individual files (or inspects their filesystem ancestors).
+    assert uc.execute("demo") == (0 if operation == "resolve" else 1)
     assert uc.last_run.state == "COMPLETED"
-    assert uc.last_run.results[0].reason == "agent_error"
+    assert uc.last_run.results[0].reason == (
+        None if operation == "resolve" else "agent_error"
+    )
     assert uc.last_run.results[1].status == "PASSED"
 
 
@@ -1540,6 +1553,8 @@ def test_handler_save_invalid_input_recovers(setup_run, monkeypatch, handler, er
         ("missing", False),
         ("directory", False),
         ("escape", False),
+        ("symlink", False),
+        ("symlink_parent", False),
         ("previous", False),
         ("foreign_http", False),
         ("ftp", False),
@@ -1576,6 +1591,14 @@ def test_gate_evidence_rule(setup_run, case, valid):
             elif case == "escape":
                 target.unlink()
                 target.symlink_to(setup_run[0])
+            elif case == "symlink":
+                original = target.with_name("original.log")
+                target.rename(original)
+                target.symlink_to(original)
+            elif case == "symlink_parent":
+                original = target.parent.with_name("original")
+                target.parent.rename(original)
+                target.parent.symlink_to(original, target_is_directory=True)
             elif case == "previous":
                 uri = uri.replace("attempt-1", "attempt-0")
             return replace(result, evidence=(Evidence(kind, uri),))
@@ -1606,3 +1629,226 @@ def test_completed_without_valid_report_is_interrupted(setup_run, monkeypatch, c
     assert uc.storage.load()["state"] == "INTERRUPTED"
     monkeypatch.setenv("AIQA_RUNS_DIR", str(uc.storage.root))
     assert main(["show"]) == 4
+    monkeypatch.setattr("aiqa.storage.pid_alive", lambda pid: False)
+    assert uc.storage.load()["state"] == "INTERRUPTED"
+    assert main(["show"]) == 4
+
+
+def test_allowed_agent_refusal_while_running_records_abort_reason(setup_run, capsys):
+    class Runner:
+        def run(self, scenario, context):
+            raise Refused("login_required")
+
+    uc, _ = usecase(setup_run)
+    uc.agent_runner = Runner()
+    assert uc.execute("demo") == 4
+    saved = json.loads((uc.storage.root / uc.last_run.id / "run.json").read_text())
+    assert saved["state"] == "ABORTED" and saved["abort_reason"] == "login_required"
+    assert "aborted: login_required" in capsys.readouterr().out
+    assert not (uc.storage.root / uc.last_run.id / "report.json").exists()
+
+
+def test_redaction_blocks_retry_and_recording_secrets(setup_run):
+    class Runner:
+        calls = 0
+
+        def run(self, scenario, context):
+            self.calls += 1
+            transcript = context.output_dir / "agent.jsonl"
+            transcript.write_text("github_pat_synthetic")
+            return AgentOutput("bad", transcript)
+
+    uc, _ = usecase(setup_run)
+    runner = Runner()
+    uc.agent_runner = runner
+    assert uc.execute("demo") == 1
+    assert runner.calls == 2  # one per scenario; redaction suppresses protocol retry
+    assert all(r.reason == "agent_error" for r in uc.last_run.results)
+    folder = uc.storage.root / uc.last_run.id
+    assert all(
+        "github_pat_" not in p.read_text() for p in folder.rglob("*") if p.is_file()
+    )
+    assert all(r.evidence and r.evidence[0].type == "log" for r in uc.last_run.results)
+
+
+def test_nested_screenshot_is_reported(setup_run):
+    class Runner(FakeAgentRunner):
+        def run(self, scenario, context):
+            output = super().run(scenario, context)
+            nested = context.output_dir / "screenshots"
+            nested.mkdir()
+            (context.output_dir / "final.png").rename(nested / "final.png")
+            return output
+
+    uc, _ = usecase(setup_run)
+    uc.agent_runner = Runner()
+    assert uc.execute("demo") == 0
+    assert all(
+        any(
+            e.type == "screenshot" and e.uri.endswith("/screenshots/final.png")
+            for e in result.evidence
+        )
+        for result in uc.last_run.results
+    )
+
+
+@pytest.mark.parametrize("extension", ["png", "jpg", "jpeg"])
+def test_screenshot_formats_in_report(setup_run, extension):
+    uc, fake = usecase(setup_run)
+    original = fake.run
+
+    def run(scenario, context):
+        output = original(scenario, context)
+        image = context.output_dir / "final.png"
+        image.unlink()
+        magic = b"\x89PNG\r\n\x1a\n" if extension == "png" else b"\xff\xd8\xff"
+        (context.output_dir / f"final.{extension}").write_bytes(magic)
+        return output
+
+    fake.run = run
+    assert uc.execute("demo") == 0
+    path = uc.storage.root / uc.last_run.id
+    payload = json.loads((path / "report.json").read_text())
+    for scenario in payload["scenarios"]:
+        screenshots = [e for e in scenario["evidence"] if e["type"] == "screenshot"]
+        assert len(screenshots) == 1
+        assert screenshots[0]["uri"].endswith(f"final.{extension}")
+
+
+def test_source_unavailable_is_refused_exit_three(setup_run, monkeypatch):
+    uc, fake = usecase(setup_run)
+
+    def limited(*args):
+        raise Refused("source_unavailable", "GitHub rate limit; retry later")
+
+    monkeypatch.setattr(uc.scenario_source, "load", limited)
+    assert uc.execute("demo") == 3
+    stored = uc.storage.load()
+    assert stored["state"] == "REFUSED"
+    assert stored["refusal_reason"] == "source_unavailable"
+    assert not fake.calls
+
+
+def test_successful_wait_duration_does_not_trigger_protocol_retry(
+    setup_run, monkeypatch
+):
+    uc, fake = usecase(setup_run)
+    original_run = fake.run
+
+    def finished(scenario, context):
+        return replace(original_run(scenario, context), seconds=301)
+
+    monkeypatch.setattr(fake, "run", finished)
+    assert uc.execute("demo") == 0
+    assert all(result.status == "PASSED" for result in uc.last_run.results)
+    assert len(fake.calls) == len(uc.last_run.results)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "file:///etc/passwd",
+        "about:blank",
+        "javascript:alert(1)",
+        "data:text/plain,hello",
+        "https://[malformed",
+    ],
+)
+def test_invalid_navigation_does_not_retry(setup_run, monkeypatch, url):
+    uc, fake = usecase(setup_run)
+    original_run = fake.run
+
+    def navigate(scenario, context):
+        output = original_run(scenario, context)
+        output.transcript_path.write_text(
+            json.dumps({"name": "browser_navigate", "input": {"url": url}})
+        )
+        return output
+
+    monkeypatch.setattr(fake, "run", navigate)
+    assert uc.execute("demo") == 1
+    assert all(result.reason == "out_of_scope" for result in uc.last_run.results)
+    assert len(fake.calls) == len(uc.last_run.results)
+
+
+@pytest.mark.parametrize("linked_root", ["ancestor", "runs"])
+def test_scenario_through_symlinked_runs_root(setup_run, tmp_path, linked_root):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    if linked_root == "ancestor":
+        link.symlink_to(real, target_is_directory=True)
+        root = link / "runs"
+    else:
+        (real / "runs").mkdir()
+        link.symlink_to(real / "runs", target_is_directory=True)
+        root = link
+    cfg = replace(setup_run[2], runs_dir=root)
+    uc, fake = usecase(setup_run, config=cfg)
+    assert uc.storage.root == root.resolve()
+    assert uc.execute("demo") == 0
+    assert len(fake.calls) == 2
+    assert all(r.status == "PASSED" for r in uc.last_run.results)
+    assert all(
+        {e.type for e in r.evidence} == {"log", "screenshot"}
+        for r in uc.last_run.results
+    )
+
+
+@pytest.mark.parametrize("error", [KeyboardInterrupt, ValueError, OSError])
+def test_aborted_attempt_is_redacted(setup_run, tmp_path, error):
+    cookie = "synthetic-access-cookie-value-123456"
+    jwt = "eyJsynthetic12345.synthetic12345."
+    state = tmp_path / "state.json"
+    state.write_text(
+        json.dumps({"cookies": [{"name": "CF_Authorization", "value": cookie}]})
+    )
+
+    class Browser:
+        def preflight(self, url):
+            return state
+
+    class Runner:
+        def run(self, scenario, context):
+            (context.output_dir / "agent.jsonl").write_text(cookie)
+            (context.output_dir / "agent.stderr.log").write_text(jwt)
+            nested = context.output_dir / "images"
+            nested.mkdir()
+            (nested / "collected.png").write_bytes(
+                b"\x89PNG\r\n\x1a\n" + cookie.encode()
+            )
+            raise error("synthetic failure")
+
+    uc, _ = usecase(setup_run, browser_session=Browser())
+    uc.agent_runner = Runner()
+    assert uc.execute("demo") == 4
+    folder = uc.storage.root / uc.last_run.id
+    assert uc.storage.load()["state"] == "ABORTED"
+    for file in folder.rglob("*"):
+        if file.is_file():
+            assert cookie.encode() not in file.read_bytes()
+            assert jwt.encode() not in file.read_bytes()
+    assert "Redaction: scanned attempt artifacts" in (folder / "summary.md").read_text()
+    assert list(folder.glob("scenarios/*/attempt-*/redacted.log"))
+
+
+def test_show_live_completed_without_report_exact_output(
+    setup_run, monkeypatch, capsys
+):
+    uc, _ = usecase(setup_run)
+    assert uc.execute("demo") == 0
+    folder = uc.storage.root / uc.last_run.id
+    (folder / "report.json").unlink()
+    saved = json.loads((folder / "run.json").read_text())
+    saved["pid"] = os.getpid() + 1
+    saved["abort_reason"] = "stale abort"
+    (folder / "run.json").write_text(json.dumps(saved))
+    monkeypatch.setattr("aiqa.storage.pid_alive", lambda pid: True)
+    monkeypatch.setenv("AIQA_RUNS_DIR", str(uc.storage.root))
+    capsys.readouterr()
+    assert main(["show"]) == 5
+    expected = f"{uc.last_run.id}: RUNNING\n" + "".join(
+        f"{r.scenario_id}: {r.status} — {r.summary}\n" for r in uc.last_run.results
+    )
+    assert capsys.readouterr().out == expected
+    assert json.loads((folder / "run.json").read_text()) == saved

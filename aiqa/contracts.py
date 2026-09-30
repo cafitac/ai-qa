@@ -71,19 +71,39 @@ _StringTimestampLoader.yaml_implicit_resolvers = {
 }
 
 
-def load_yaml(path: Path) -> object:
+def parse_yaml(content: str | bytes) -> object:
     try:
-        return yaml.load(
-            path.read_text(encoding="utf-8"), Loader=_StringTimestampLoader
-        )
+        text = content.decode("utf-8") if isinstance(content, bytes) else content
+        return yaml.load(text, Loader=_StringTimestampLoader)
     except (
-        OSError,
-        UnicodeDecodeError,
+        UnicodeError,
         yaml.YAMLError,
         RecursionError,
         ValueError,
         OverflowError,
     ) as exc:
+        raise InvalidInput("Invalid YAML input") from exc
+
+
+def parse_json(content: str | bytes) -> object:
+    try:
+        text = content.decode("utf-8") if isinstance(content, bytes) else content
+        return json.loads(text)
+    except (UnicodeError, RecursionError, ValueError, OverflowError) as exc:
+        raise InvalidInput("Invalid JSON input") from exc
+
+
+def load_yaml(path: Path) -> object:
+    try:
+        return parse_yaml(path.read_bytes())
+    except (OSError, InvalidInput) as exc:
+        raise InvalidInput(f"Cannot read input: {path}") from exc
+
+
+def load_json(path: Path) -> object:
+    try:
+        return parse_json(path.read_bytes())
+    except (OSError, InvalidInput) as exc:
         raise InvalidInput(f"Cannot read input: {path}") from exc
 
 
@@ -166,7 +186,7 @@ class Config:
     protocol_retries: int = 1
     runs_dir: Path = Path("runs")
     state_file: Path = Path("~/.config/aiqa/access-state.json")
-    playwright_mcp: str | None = None
+    playwright_mcp: str | None = "@playwright/mcp@0.0.83"
 
     @classmethod
     def parse(cls, value: object, environ: Mapping[str, str] | None = None) -> Config:
@@ -194,7 +214,7 @@ class Config:
                 **budget,
                 runs_dir=Path(runs_path).expanduser(),
                 state_file=Path(state_path).expanduser(),
-                playwright_mcp=d.get("playwright_mcp"),
+                playwright_mcp=d.get("playwright_mcp", cls.playwright_mcp),
             )
         except (ValueError, RuntimeError) as exc:
             raise InvalidInput("Invalid configured path") from exc
@@ -271,6 +291,11 @@ def url_origin(url: str) -> str:
         if ":" in host:
             host = f"[{host}]"
         port = parsed.port
+        if port == {"http": 80, "https": 443}[parsed.scheme]:
+            port = None
         return f"{parsed.scheme}://{host}" + (f":{port}" if port is not None else "")
     except ValueError as exc:
         raise InvalidInput("Invalid descriptor URL") from exc
+
+
+PLAYWRIGHT_MCP_PATTERN = re.compile(r"@playwright/mcp@[0-9]+\.[0-9]+\.[0-9]+")

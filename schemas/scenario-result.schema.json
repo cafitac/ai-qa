@@ -1,0 +1,102 @@
+{
+  "type": "object",
+  "properties": {
+    "apiVersion": {
+      "const": "ai-qa/v1"
+    },
+    "scenario_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{1,20}/[a-z][a-z0-9-]{1,40}(?![\\s\\S])"
+    },
+    "status": {
+      "enum": [
+        "PASSED",
+        "FAILED",
+        "SKIPPED"
+      ]
+    },
+    "reason": {
+      "enum": [
+        null,
+        "timeout",
+        "turn_cap",
+        "agent_protocol",
+        "no_evidence",
+        "out_of_scope",
+        "agent_error",
+        "assertion"
+      ]
+    },
+    "summary": {
+      "type": "string"
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "expect": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "observed": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expect",
+          "ok",
+          "observed"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "enum": [
+              "screenshot",
+              "log",
+              "http"
+            ]
+          },
+          "uri": {
+            "type": "string",
+            "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+(?![\\s\\S])"
+          }
+        },
+        "required": [
+          "type",
+          "uri"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "turns": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "seconds": {
+      "type": "number",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "apiVersion",
+    "scenario_id",
+    "status",
+    "reason",
+    "summary",
+    "checks",
+    "evidence",
+    "turns",
+    "seconds"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

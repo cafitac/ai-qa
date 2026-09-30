@@ -1,0 +1,79 @@
+{
+  "type": "object",
+  "properties": {
+    "apiVersion": {
+      "const": "ai-qa/v1"
+    },
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{1,40}(?![\\s\\S])"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "start": {
+            "description": "Absolute path on the environment entryUrl ORIGIN (default /); the path prefix of entryUrl is not applied.",
+            "type": "string",
+            "pattern": "^/(?!/)[^\\s\\x00-\\x1f\\x7f\\\\]*(?![\\s\\S])",
+            "maxLength": 500
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            },
+            "minItems": 1,
+            "maxItems": 20
+          },
+          "expect": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            },
+            "minItems": 1,
+            "maxItems": 10
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            },
+            "uniqueItems": true
+          },
+          "timeout": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]*[smhd](?![\\s\\S])",
+            "maxLength": 10
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "steps",
+          "expect"
+        ],
+        "additionalProperties": false
+      },
+      "maxItems": 50
+    }
+  },
+  "required": [
+    "apiVersion",
+    "scenarios"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

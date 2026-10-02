@@ -178,6 +178,7 @@ def environment_path(env: Mapping[str, str], name: str) -> str | None:
 class Config:
     dashboard_url: str = "https://preview-hub.cafitac.com"
     access_team_domain: str = "cafitac.cloudflareaccess.com"
+    environment_domain: str = "cafitac.com"
     agent_kind: str = "claude"
     agent_model: str | None = None
     max_scenarios: int = 20

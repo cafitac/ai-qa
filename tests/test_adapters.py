@@ -317,7 +317,7 @@ def test_login_modes_and_preflight_cleanup(tmp_path, capsys):
     fake = FakePlaywright()
     session = PlaywrightSession(config, lambda: fake)
     session.login()
-    assert capsys.readouterr().out == "session saved\n"
+    assert capsys.readouterr().out == "session saved (1 Access cookies)\n"
     assert config.state_file.stat().st_mode & 0o777 == 0o600
     assert config.state_file.parent.stat().st_mode & 0o777 == 0o700
     with session:
@@ -1515,3 +1515,119 @@ def test_runner_cleanup_preserves_exception_or_timeout(
             runner.run(SCENARIO, context)
         assert caught.value is original
     assert "secret" not in (context.output_dir / "collect.log").read_text()
+
+
+def test_close_attempts_all_temporary_states_after_unlink_error(tmp_path, monkeypatch):
+    config = Config(state_file=tmp_path / "owner.json")
+    session = PlaywrightSession(config)
+    paths = [tmp_path / "first.json", tmp_path / "second.json"]
+    for path in paths:
+        path.write_text("synthetic state")
+    session.temporary_states = paths.copy()
+    session.current_state = paths[1]
+    original = Path.unlink
+    attempted = []
+
+    def unlink(path, missing_ok=False):
+        attempted.append(path)
+        if path == paths[0]:
+            raise PermissionError("synthetic failure")
+        original(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    with pytest.raises(PermissionError):
+        session.close()
+    assert attempted == paths
+    assert not paths[1].exists()
+    assert session.temporary_states == [paths[0]]
+    assert session.current_state == config.state_file
+    monkeypatch.setattr(Path, "unlink", original)
+    session.close()
+    assert not paths[0].exists()
+    assert session.temporary_states == []
+
+
+@pytest.mark.parametrize("environment_domain", ["cafitac.com", "preview.example"])
+def test_login_and_preflight_filter_storage_state(tmp_path, capsys, environment_domain):
+    config = Config(
+        dashboard_url="https://demo.example/",
+        access_team_domain="team.example",
+        environment_domain=environment_domain,
+        state_file=tmp_path / "session" / "access.json",
+    )
+    allowed = ["demo.example", ".team.example", f"phub-demo.{environment_domain}"]
+    rejected = [
+        "github.com",
+        ".github.com",
+        environment_domain,
+        f"other.{environment_domain}",
+        f"nested.phub-demo.{environment_domain}",
+        f"phub-demo.{environment_domain}.foreign.example",
+        f"phub-.{environment_domain}",
+        ".example",
+    ]
+    state = {
+        "cookies": [
+            {
+                "name": "CF_Authorization",
+                "value": "synthetic-access",
+                "domain": host,
+                "httpOnly": True,
+            }
+            for host in allowed
+        ]
+        + [
+            {"name": "user_session", "value": "synthetic-foreign", "domain": host}
+            for host in rejected
+        ],
+        "origins": [
+            {
+                "origin": f"https://{host.lstrip('.')}",
+                "localStorage": [{"name": "example", "value": "synthetic"}],
+            }
+            for host in allowed + rejected
+        ],
+    }
+
+    class StoragePlaywright(FakePlaywright):
+        def storage_state(self):
+            return state
+
+    fake = StoragePlaywright()
+    with PlaywrightSession(config, lambda: fake) as session:
+        session.login()
+        assert capsys.readouterr().out == "session saved (3 Access cookies)\n"
+        expected = {"cookies": state["cookies"][:3], "origins": state["origins"][:3]}
+        assert json.loads(config.state_file.read_text()) == expected
+        temporary = session.preflight(config.dashboard_url)
+        assert json.loads(temporary.read_text()) == expected
+    assert not temporary.exists()
+    assert len(state["cookies"]) == len(allowed + rejected)
+
+
+def test_login_drops_parent_scoped_access_cookie(tmp_path):
+    from aiqa.browser import filter_state
+
+    config = Config(state_file=tmp_path / "state.json")
+    state = {
+        "cookies": [
+            {
+                "name": "CF_Authorization",
+                "value": "synthetic-parent-access",
+                "domain": ".cafitac.com",
+                "httpOnly": True,
+            }
+        ],
+        "origins": [],
+    }
+    assert filter_state(state, config) == {"cookies": [], "origins": []}
+
+    class ParentCookiePlaywright(FakePlaywright):
+        def storage_state(self):
+            return state
+
+    fake = ParentCookiePlaywright(landed=config.dashboard_url)
+    with pytest.raises(Refused, match="Exact-host Access cookies"):
+        PlaywrightSession(config, lambda: fake).login()
+    assert not config.state_file.exists()
+    assert fake.closed

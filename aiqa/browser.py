@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Self
+from typing import Any, Self, cast
 from urllib.parse import urlsplit
 
 from .contracts import Config, url_origin
@@ -47,6 +48,34 @@ def save_state(path: Path, state: Any, *, private_directory: bool = False) -> No
     atomic_write(path, json.dumps(state))
 
 
+def filter_state(state: dict[str, Any], config: Config) -> dict[str, Any]:
+    hosts = {
+        (urlsplit(config.dashboard_url).hostname or "").lower(),
+        config.access_team_domain.lower(),
+    }
+    environment_host = re.compile(
+        r"phub-[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\."
+        + re.escape(config.environment_domain.lower())
+    )
+
+    def allowed(host: str) -> bool:
+        host = host.lower()
+        return host in hosts or environment_host.fullmatch(host) is not None
+
+    return {
+        "cookies": [
+            cookie
+            for cookie in state.get("cookies", [])
+            if allowed(cookie.get("domain", "").lstrip("."))
+        ],
+        "origins": [
+            origin
+            for origin in state.get("origins", [])
+            if allowed(urlsplit(cast(str, origin.get("origin", ""))).hostname or "")
+        ],
+    }
+
+
 class PlaywrightSession:
     def __init__(self, config: Config, factory: Callable[[], Any] = playwright_factory):
         self.config = config
@@ -66,10 +95,18 @@ class PlaywrightSession:
         self.close()
 
     def close(self) -> None:
+        errors: list[OSError] = []
+        remaining: list[Path] = []
         for path in self.temporary_states:
-            path.unlink(missing_ok=True)
-        self.temporary_states.clear()
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                errors.append(exc)
+                remaining.append(path)
+        self.temporary_states = remaining
         self.current_state = self.config.state_file.expanduser()
+        if errors:
+            raise errors[0]
 
     def login(self) -> None:
         try:
@@ -94,15 +131,14 @@ class PlaywrightSession:
                     if time.monotonic() >= deadline:
                         raise Refused("login_required")
                     page.wait_for_timeout(250)
-                state = context.storage_state()
+                state = filter_state(context.storage_state(), self.config)
                 dashboard_host = urlsplit(self.config.dashboard_url).hostname or ""
                 cookies = [
                     cookie
                     for cookie in state["cookies"]
                     if cookie["name"] in ("CF_Authorization", "CF_AppSession")
                     and any(
-                        host == cookie["domain"].lstrip(".")
-                        or host.endswith("." + cookie["domain"].lstrip("."))
+                        host.lower() == cookie["domain"].lstrip(".").lower()
                         for host in (dashboard_host, self.config.access_team_domain)
                     )
                 ]
@@ -111,14 +147,14 @@ class PlaywrightSession:
                 ):
                     raise Refused(
                         "login_required",
-                        "Access cookies must be HttpOnly; session was not saved",
+                        "Exact-host Access cookies for the dashboard or team domain must be HttpOnly; session was not saved",
                     )
                 save_state(
                     self.config.state_file.expanduser(), state, private_directory=True
                 )
             finally:
                 browser.close()
-        print("session saved")
+        print(f"session saved ({len(state['cookies'])} Access cookies)")
 
     def preflight(self, url: str) -> Path:
         if (
@@ -138,7 +174,7 @@ class PlaywrightSession:
                 os.close(fd)
                 path = Path(name)
                 self.temporary_states.append(path)
-                save_state(path, context.storage_state())
+                save_state(path, filter_state(context.storage_state(), self.config))
                 self.current_state = path
                 return path
             finally:

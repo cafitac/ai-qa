@@ -1852,3 +1852,39 @@ def test_show_live_completed_without_report_exact_output(
     )
     assert capsys.readouterr().out == expected
     assert json.loads((folder / "run.json").read_text()) == saved
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "host/path",
+        "user@host",
+        " host",
+        "host\n",
+        "https://host",
+        "host:443",
+        ".example",
+        "bad-.example",
+        "",
+        "a" * 64 + ".example",
+    ],
+)
+def test_environment_domain_requires_plain_hostname(value):
+    with pytest.raises(InvalidInput):
+        Config.parse({"apiVersion": "ai-qa/v1", "hub": {"environment_domain": value}})
+
+
+def test_environment_domain_config_default_and_override():
+    assert (
+        Config.parse({"apiVersion": "ai-qa/v1"}, {}).environment_domain == "cafitac.com"
+    )
+    assert (
+        Config.parse(
+            {
+                "apiVersion": "ai-qa/v1",
+                "hub": {"environment_domain": "preview.example"},
+            },
+            {},
+        ).environment_domain
+        == "preview.example"
+    )

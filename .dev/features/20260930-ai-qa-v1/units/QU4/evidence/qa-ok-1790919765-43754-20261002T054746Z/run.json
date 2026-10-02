@@ -1,0 +1,43 @@
+{
+  "apiVersion": "ai-qa/v1",
+  "id": "qa-ok-1790919765-43754-20261002T054746Z",
+  "environment": "qa-ok-1790919765-43754",
+  "commits": {
+    "backend": "544fd35e612f9751547e650f50ab0a5f1d5b1567",
+    "frontend": "8d977155868bf9be00bc7aaacb54da23d3ba3e94"
+  },
+  "state": "COMPLETED",
+  "refusal_reason": null,
+  "abort_reason": null,
+  "agent": {
+    "kind": "claude",
+    "model": null
+  },
+  "budget": {
+    "max_scenarios": 2,
+    "max_turns": 1,
+    "scenario_timeout": "300s",
+    "protocol_retries": 1
+  },
+  "pid": 50992,
+  "started_at": "2026-10-02T05:47:46.732325+00:00",
+  "finished_at": "2026-10-02T05:48:11.922517+00:00",
+  "results": [
+    {
+      "apiVersion": "ai-qa/v1",
+      "scenario_id": "frontend/seed-notes-listed",
+      "status": "FAILED",
+      "summary": "turn_cap",
+      "reason": "turn_cap",
+      "checks": [],
+      "evidence": [
+        {
+          "type": "log",
+          "uri": "scenarios/frontend__seed-notes-listed/attempt-1/agent.jsonl"
+        }
+      ],
+      "turns": 2,
+      "seconds": 13.779976417019498
+    }
+  ]
+}

@@ -1,0 +1,89 @@
+{
+  "apiVersion": "ai-qa/v1",
+  "id": "qa-ok-1790919765-43754-20261002T054343Z",
+  "environment": "qa-ok-1790919765-43754",
+  "commits": {
+    "backend": "544fd35e612f9751547e650f50ab0a5f1d5b1567",
+    "frontend": "8d977155868bf9be00bc7aaacb54da23d3ba3e94"
+  },
+  "state": "COMPLETED",
+  "refusal_reason": null,
+  "abort_reason": null,
+  "agent": {
+    "kind": "claude",
+    "model": null
+  },
+  "budget": {
+    "max_scenarios": 2,
+    "max_turns": 25,
+    "scenario_timeout": "300s",
+    "protocol_retries": 1
+  },
+  "pid": 44932,
+  "started_at": "2026-10-02T05:43:43.978168+00:00",
+  "finished_at": "2026-10-02T05:46:00.200202+00:00",
+  "results": [
+    {
+      "apiVersion": "ai-qa/v1",
+      "scenario_id": "frontend/seed-notes-listed",
+      "status": "PASSED",
+      "summary": "Opened the start URL. The Notes list finished loading and showed 2 items. All 3 expectations were seen in the accessibility snapshot. The console logged 1 error, but it did not affect any expectation; its details were not checked. Saved final.png.",
+      "reason": null,
+      "checks": [
+        {
+          "expect": "Preview notes 제목이 보인다",
+          "ok": true,
+          "observed": "Level-1 heading 'Preview notes' is shown (the page title is also 'Preview notes')"
+        },
+        {
+          "expect": "Notes 목록에 Welcome to preview-hub! 메모가 보인다",
+          "ok": true,
+          "observed": "Notes list contains the item 'Welcome to preview-hub!'"
+        },
+        {
+          "expect": "Notes 목록에 Try adding a note. 메모가 보인다",
+          "ok": true,
+          "observed": "Notes list contains the item 'Try adding a note.'"
+        }
+      ],
+      "evidence": [
+        {
+          "type": "screenshot",
+          "uri": "scenarios/frontend__seed-notes-listed/attempt-1/final.png"
+        },
+        {
+          "type": "log",
+          "uri": "scenarios/frontend__seed-notes-listed/attempt-1/agent.jsonl"
+        }
+      ],
+      "turns": 4,
+      "seconds": 92.50364258300397
+    },
+    {
+      "apiVersion": "ai-qa/v1",
+      "scenario_id": "frontend/add-note-shows-first",
+      "status": "PASSED",
+      "summary": "I opened the page and waited for the Notes list to finish loading (2 starting items). Reading the clock with browser_evaluate was denied for lack of approval, so I built the timestamp by hand from the snapshot log time instead. I typed 'QA note 2026-10-02 05:45:52.317 UTC', clicked Add note and waited for the list to update. The new note showed up as the first item, and final.png was saved. The page logged 1 console error before any action; I did not open it.",
+      "reason": null,
+      "checks": [
+        {
+          "expect": "방금 입력한 고유한 문장이 Notes 목록의 첫 번째 항목으로 보인다",
+          "ok": true,
+          "observed": "After adding, the first Notes list item was 'QA note 2026-10-02 05:45:52.317 UTC', followed by 'Try adding a note.' and 'Welcome to preview-hub!'."
+        }
+      ],
+      "evidence": [
+        {
+          "type": "screenshot",
+          "uri": "scenarios/frontend__add-note-shows-first/attempt-1/final.png"
+        },
+        {
+          "type": "log",
+          "uri": "scenarios/frontend__add-note-shows-first/attempt-1/agent.jsonl"
+        }
+      ],
+      "turns": 9,
+      "seconds": 32.09440333399107
+    }
+  ]
+}

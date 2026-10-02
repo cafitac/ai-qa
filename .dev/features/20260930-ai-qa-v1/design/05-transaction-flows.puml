@@ -1,0 +1,59 @@
+@startuml
+title ai-qa — aiqa run <env> (Q1)
+
+actor Owner
+participant "CLI" as CLI
+participant "RunScenarios" as UC
+participant "BrowserSession\n(Playwright, saved Access state)" as BS
+participant "DescriptorSource\n(hub dashboard API)" as DS
+participant "ScenarioSource\n(GitHub raw @commit)" as SS
+participant "AgentRunner\n(claude -p + Playwright MCP)" as AG
+participant "VerdictGate / Redactor" as VG
+database "runs/<id>/ (files)" as FS
+
+Owner -> CLI: aiqa run feat-x [--tag smoke]
+CLI -> UC: execute(env, filters)
+UC -> FS: create run dir, run.json state=CREATED (atomic write)
+UC -> BS: preflight(dashboard URL) with saved state
+alt no state / lands on Access login
+  UC -> FS: state=REFUSED reason=login_required
+  UC --> CLI: exit 3 "run aiqa login"
+end
+UC -> DS: get(env) through the browser session
+alt unknown / not READY / not allHealthy
+  UC -> FS: state=REFUSED reason=environment_not_ready
+  UC --> CLI: exit 3 (no agent call)
+end
+UC -> SS: load(repo, commit) for each service
+UC -> BS: preflight(entryUrl) -> storage state with the env-host cookie (temp file 0600)
+UC -> FS: state=RUNNING, scenarios listed (PENDING), commits fixed
+loop each scenario (sequential), while run budget remains
+  UC -> AG: run(prompt(K3), mcp_config(allowed origins, storage state path,\noutput dir = scenario dir), caps) in an empty temp cwd
+  note right: process group; wall-clock timeout;\nstream transcript to scenario dir
+  AG --> UC: AgentOutput(result text, transcript, turns, seconds, exit)
+  UC -> VG: accept(output, transcript, files, caps)
+  VG --> UC: ScenarioResult (PASSED/FAILED/SKIPPED + reason)
+  UC -> VG: redact-scan scenario dir (cookie/JWT patterns)
+  UC -> FS: write scenarios/<id>/result.json, update run.json (atomic)
+end
+UC -> FS: write report.json (qa-report/v1, schema-validated), summary.md; state=COMPLETED
+UC -> FS: delete temp storage state
+UC --> CLI: exit 0 if no FAILED else 1
+@enduml
+
+@startuml
+title ai-qa — aiqa login (Q1)
+
+actor Owner
+participant "CLI" as CLI
+participant "BrowserSession (headed Playwright)" as BS
+participant "Cloudflare Access + GitHub SSO" as CF
+
+Owner -> CLI: aiqa login
+CLI -> BS: open dashboard URL in a headed window
+BS -> CF: redirect to Access login
+Owner -> CF: signs in (GitHub SSO / PIN) — typed by the owner only
+CF --> BS: session cookies (HttpOnly)
+BS -> CLI: landed on the dashboard origin
+CLI -> CLI: verify the Access cookie is HttpOnly; save storage state\n~/.config/aiqa/access-state.json (0600); print only "session saved"
+@enduml

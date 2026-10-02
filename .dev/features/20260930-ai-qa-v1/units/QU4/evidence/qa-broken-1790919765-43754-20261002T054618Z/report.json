@@ -1,0 +1,48 @@
+{
+  "apiVersion": "preview-hub/v1",
+  "kind": "QaReport",
+  "environment": "qa-broken-1790919765-43754",
+  "commits": {
+    "backend": "919446ada68a404eae2905426527bd6480fe364d",
+    "frontend": "8d977155868bf9be00bc7aaacb54da23d3ba3e94"
+  },
+  "startedAt": "2026-10-02T05:46:18.518470+00:00",
+  "finishedAt": "2026-10-02T05:47:42.799879+00:00",
+  "scenarios": [
+    {
+      "id": "frontend/seed-notes-listed",
+      "status": "PASSED",
+      "summary": "Opened the start URL and waited 3 seconds for the Notes list to load. The page shows the 'Preview notes' h1 heading, and the Notes list has 2 items: 'Try adding a note.' and 'Welcome to preview-hub!'. All expectations were met. The page logged 1 console error. I couldn't read it because the console-messages tool was denied (it needs approval and this session has no way to grant it). Saved final.png.",
+      "evidence": [
+        {
+          "type": "screenshot",
+          "uri": "scenarios/frontend__seed-notes-listed/attempt-1/final.png"
+        },
+        {
+          "type": "log",
+          "uri": "scenarios/frontend__seed-notes-listed/attempt-1/agent.jsonl"
+        }
+      ]
+    },
+    {
+      "id": "frontend/add-note-shows-first",
+      "status": "FAILED",
+      "summary": "I typed the unique note 'QA note 2026-10-02T05:47:30.123Z unique' and clicked Add note. The app showed an alert: 'Could not confirm the note was saved. Check the API connection and reload before retrying.' The new note did not appear in the list. The list still had only 'Try adding a note.' and 'Welcome to preview-hub!'. The page had 2 console errors that I couldn't read: the console and network tools were blocked by permissions. Screenshot saved as final.png.",
+      "evidence": [
+        {
+          "type": "screenshot",
+          "uri": "scenarios/frontend__add-note-shows-first/attempt-1/final.png"
+        },
+        {
+          "type": "log",
+          "uri": "scenarios/frontend__add-note-shows-first/attempt-1/agent.jsonl"
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "passed": 1,
+    "failed": 1,
+    "skipped": 0
+  }
+}

@@ -1,0 +1,82 @@
+@startuml
+title ai-qa domain model (Q1)
+hide empty members
+
+package "Run (ai-qa owned authority)" {
+  class Run <<AggregateRoot>> {
+    id: RunId  (<env>-<UTC timestamp>)
+    environment, commits (from descriptor)
+    state: CREATED|PREFLIGHT|RUNNING|COMPLETED|REFUSED|ABORTED
+    budget: Budget
+    results: ScenarioResult[*]
+    --
+    refuse(reason) ; start() ; record(result) ; complete() ; abort(reason)
+    report() -> QaReport (qa-report/v1)
+  }
+  class ScenarioResult <<Domain Value Object>> {
+    scenario_id, status PASSED|FAILED|SKIPPED
+    reason?: timeout|turn_cap|agent_protocol|no_evidence|out_of_scope|agent_error|assertion
+    summary, evidence[*], turns, seconds
+  }
+  class Budget <<Domain Value Object>> {
+    max_scenarios, max_turns, scenario_timeout, max_agent_calls
+  }
+  class Evidence <<Domain Value Object>> {
+    type screenshot|log|http ; uri (relative file)
+  }
+}
+
+package "Contracts (parsed values)" {
+  class EnvironmentDescriptor <<Domain Value Object>>
+  class Scenario <<Domain Value Object>> {
+    id, title, service, start, steps[*], expect[*], tags[*], timeout?
+  }
+  class AllowedOrigins <<Domain Value Object>> {
+    from descriptor URLs + Access team domain
+    permits(url) -> bool
+  }
+}
+
+package "Application (UseCases, execute() only)" {
+  class Login
+  class RunScenarios
+  class ShowRun
+  class VerdictGate <<service>> {
+    accept(agent_output, transcript, files, caps) -> ScenarioResult
+  }
+  class Redactor <<service>> {
+    scan(path) ; fail on cookie/JWT/token patterns
+  }
+}
+
+package "External boundaries" {
+  interface DescriptorSource { get(env) -> EnvironmentDescriptor }
+  interface ScenarioSource { load(repo, commit) -> Scenario[*] }
+  interface AgentRunner { run(prompt, mcp_config, caps, cwd) -> AgentOutput }
+  interface BrowserSession { login() ; preflight(url) -> storage_state }
+  class ClaudeCodeRunner
+  class CodexRunner
+  class FakeAgentRunner <<test double>>
+}
+
+RunScenarios --> Run
+RunScenarios --> DescriptorSource
+RunScenarios --> ScenarioSource
+RunScenarios --> BrowserSession
+RunScenarios --> AgentRunner
+RunScenarios --> VerdictGate
+RunScenarios --> Redactor
+AgentRunner <|.. ClaudeCodeRunner
+AgentRunner <|.. CodexRunner
+AgentRunner <|.. FakeAgentRunner
+
+note right of Run
+  Invariants: results only while RUNNING; one result per scenario;
+  COMPLETED report validates against qa-report/v1;
+  commits are copied from the descriptor at PREFLIGHT and never change.
+end note
+note bottom of VerdictGate
+  The agent's verdict is input. PASSED needs: valid JSON result,
+  >= 1 screenshot file, all navigations inside AllowedOrigins, caps respected.
+end note
+@enduml

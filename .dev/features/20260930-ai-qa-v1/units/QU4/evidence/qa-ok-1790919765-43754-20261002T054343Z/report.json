@@ -1,0 +1,48 @@
+{
+  "apiVersion": "preview-hub/v1",
+  "kind": "QaReport",
+  "environment": "qa-ok-1790919765-43754",
+  "commits": {
+    "backend": "544fd35e612f9751547e650f50ab0a5f1d5b1567",
+    "frontend": "8d977155868bf9be00bc7aaacb54da23d3ba3e94"
+  },
+  "startedAt": "2026-10-02T05:43:43.978168+00:00",
+  "finishedAt": "2026-10-02T05:46:00.200202+00:00",
+  "scenarios": [
+    {
+      "id": "frontend/seed-notes-listed",
+      "status": "PASSED",
+      "summary": "Opened the start URL. The Notes list finished loading and showed 2 items. All 3 expectations were seen in the accessibility snapshot. The console logged 1 error, but it did not affect any expectation; its details were not checked. Saved final.png.",
+      "evidence": [
+        {
+          "type": "screenshot",
+          "uri": "scenarios/frontend__seed-notes-listed/attempt-1/final.png"
+        },
+        {
+          "type": "log",
+          "uri": "scenarios/frontend__seed-notes-listed/attempt-1/agent.jsonl"
+        }
+      ]
+    },
+    {
+      "id": "frontend/add-note-shows-first",
+      "status": "PASSED",
+      "summary": "I opened the page and waited for the Notes list to finish loading (2 starting items). Reading the clock with browser_evaluate was denied for lack of approval, so I built the timestamp by hand from the snapshot log time instead. I typed 'QA note 2026-10-02 05:45:52.317 UTC', clicked Add note and waited for the list to update. The new note showed up as the first item, and final.png was saved. The page logged 1 console error before any action; I did not open it.",
+      "evidence": [
+        {
+          "type": "screenshot",
+          "uri": "scenarios/frontend__add-note-shows-first/attempt-1/final.png"
+        },
+        {
+          "type": "log",
+          "uri": "scenarios/frontend__add-note-shows-first/attempt-1/agent.jsonl"
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "passed": 2,
+    "failed": 0,
+    "skipped": 0
+  }
+}

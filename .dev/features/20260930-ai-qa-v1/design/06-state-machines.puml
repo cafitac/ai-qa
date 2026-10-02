@@ -1,0 +1,33 @@
+@startuml
+title Run lifecycle (owned by ai-qa)
+
+[*] --> CREATED : aiqa run
+CREATED --> PREFLIGHT : run dir written
+PREFLIGHT --> REFUSED : login required / env unknown, not READY, unhealthy / no scenarios / invalid scenario file
+PREFLIGHT --> RUNNING : descriptor + scenarios loaded, session valid
+RUNNING --> RUNNING : scenario finished (result recorded)
+RUNNING --> COMPLETED : all scenarios have a result (or run budget exhausted -> rest SKIPPED)
+RUNNING --> ABORTED : Ctrl-C / signal / unrecoverable runner error (children killed, partial results kept)
+REFUSED --> [*]
+COMPLETED --> [*]
+ABORTED --> [*]
+
+note right of RUNNING
+  A run.json left in RUNNING whose pid is gone is shown as INTERRUPTED
+  by `aiqa show`; it is never resumed (start a new run).
+end note
+@enduml
+
+@startuml
+title Scenario result (inside one run)
+
+[*] --> PENDING
+PENDING --> RUNNING : agent call started
+RUNNING --> PASSED : VerdictGate accepts PASSED
+RUNNING --> FAILED : agent says FAILED, or gate reason\n(timeout, turn_cap, agent_protocol, no_evidence, out_of_scope, agent_error)
+RUNNING --> RUNNING : one retry on agent_protocol only
+PENDING --> SKIPPED : run budget exhausted / filtered out
+PASSED --> [*]
+FAILED --> [*]
+SKIPPED --> [*]
+@enduml

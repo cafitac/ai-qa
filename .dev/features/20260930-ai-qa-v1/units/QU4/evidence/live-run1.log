@@ -1,0 +1,13 @@
+B3: REFUSED environment_not_ready; calls=0
+B1: two PASSED; schema/screenshots/commits verified; runs/qa-ok-1790919765-43754-20261002T054343Z
+B2: add-note reason=agent verdict
+B2: seed PASSED; add-note FAILED; runs/qa-broken-1790919765-43754-20261002T054618Z
+B4: runs/qa-ok-1790919765-43754-20261002T054343Z matching files=0
+B4: runs/qa-broken-1790919765-43754-20261002T054618Z matching files=0
+B5: COMPLETED reason=turn_cap
+B4: runs/qa-ok-1790919765-43754-20261002T054746Z matching files=0
+Live check passed; evidence retained under ./runs
+cleanup: qa-ok-1790919765-43754 inventory=empty
+cleanup: qa-broken-1790919765-43754 inventory=empty
+agent calls (attempt directories): 5
+EXIT=0

@@ -1,0 +1,29 @@
+{
+  "apiVersion": "preview-hub/v1",
+  "kind": "QaReport",
+  "environment": "qa-ok-1790919765-43754",
+  "commits": {
+    "backend": "544fd35e612f9751547e650f50ab0a5f1d5b1567",
+    "frontend": "8d977155868bf9be00bc7aaacb54da23d3ba3e94"
+  },
+  "startedAt": "2026-10-02T05:47:46.732325+00:00",
+  "finishedAt": "2026-10-02T05:48:11.922517+00:00",
+  "scenarios": [
+    {
+      "id": "frontend/seed-notes-listed",
+      "status": "FAILED",
+      "summary": "turn_cap",
+      "evidence": [
+        {
+          "type": "log",
+          "uri": "scenarios/frontend__seed-notes-listed/attempt-1/agent.jsonl"
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "passed": 0,
+    "failed": 1,
+    "skipped": 0
+  }
+}

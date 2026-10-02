@@ -1,0 +1,89 @@
+{
+  "apiVersion": "ai-qa/v1",
+  "id": "qa-broken-1790919765-43754-20261002T054618Z",
+  "environment": "qa-broken-1790919765-43754",
+  "commits": {
+    "backend": "919446ada68a404eae2905426527bd6480fe364d",
+    "frontend": "8d977155868bf9be00bc7aaacb54da23d3ba3e94"
+  },
+  "state": "COMPLETED",
+  "refusal_reason": null,
+  "abort_reason": null,
+  "agent": {
+    "kind": "claude",
+    "model": null
+  },
+  "budget": {
+    "max_scenarios": 2,
+    "max_turns": 25,
+    "scenario_timeout": "300s",
+    "protocol_retries": 1
+  },
+  "pid": 48158,
+  "started_at": "2026-10-02T05:46:18.518470+00:00",
+  "finished_at": "2026-10-02T05:47:42.799879+00:00",
+  "results": [
+    {
+      "apiVersion": "ai-qa/v1",
+      "scenario_id": "frontend/seed-notes-listed",
+      "status": "PASSED",
+      "summary": "Opened the start URL and waited 3 seconds for the Notes list to load. The page shows the 'Preview notes' h1 heading, and the Notes list has 2 items: 'Try adding a note.' and 'Welcome to preview-hub!'. All expectations were met. The page logged 1 console error. I couldn't read it because the console-messages tool was denied (it needs approval and this session has no way to grant it). Saved final.png.",
+      "reason": null,
+      "checks": [
+        {
+          "expect": "Preview notes 제목이 보인다",
+          "ok": true,
+          "observed": "Found an h1 heading with the text 'Preview notes'; the page title is also 'Preview notes'."
+        },
+        {
+          "expect": "Notes 목록에 Welcome to preview-hub! 메모가 보인다",
+          "ok": true,
+          "observed": "The Notes list contains a list item 'Welcome to preview-hub!'."
+        },
+        {
+          "expect": "Notes 목록에 Try adding a note. 메모가 보인다",
+          "ok": true,
+          "observed": "The Notes list contains a list item 'Try adding a note.'."
+        }
+      ],
+      "evidence": [
+        {
+          "type": "screenshot",
+          "uri": "scenarios/frontend__seed-notes-listed/attempt-1/final.png"
+        },
+        {
+          "type": "log",
+          "uri": "scenarios/frontend__seed-notes-listed/attempt-1/agent.jsonl"
+        }
+      ],
+      "turns": 6,
+      "seconds": 26.869759666995378
+    },
+    {
+      "apiVersion": "ai-qa/v1",
+      "scenario_id": "frontend/add-note-shows-first",
+      "status": "FAILED",
+      "summary": "I typed the unique note 'QA note 2026-10-02T05:47:30.123Z unique' and clicked Add note. The app showed an alert: 'Could not confirm the note was saved. Check the API connection and reload before retrying.' The new note did not appear in the list. The list still had only 'Try adding a note.' and 'Welcome to preview-hub!'. The page had 2 console errors that I couldn't read: the console and network tools were blocked by permissions. Screenshot saved as final.png.",
+      "reason": null,
+      "checks": [
+        {
+          "expect": "방금 입력한 고유한 문장이 Notes 목록의 첫 번째 항목으로 보인다",
+          "ok": false,
+          "observed": "After waiting about 2s, the Notes list still showed only 'Try adding a note.' and 'Welcome to preview-hub!'. The unique note was missing from the list. An alert said: 'Could not confirm the note was saved. Check the API connection and reload before retrying.' The text stayed in the input field."
+        }
+      ],
+      "evidence": [
+        {
+          "type": "screenshot",
+          "uri": "scenarios/frontend__add-note-shows-first/attempt-1/final.png"
+        },
+        {
+          "type": "log",
+          "uri": "scenarios/frontend__add-note-shows-first/attempt-1/agent.jsonl"
+        }
+      ],
+      "turns": 10,
+      "seconds": 30.016635874984786
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "apiVersion": "ai-qa/v1",
+  "id": "aiqa-missing-1790919765-20261002T054254Z",
+  "environment": "aiqa-missing-1790919765",
+  "commits": {},
+  "state": "REFUSED",
+  "refusal_reason": "environment_not_ready",
+  "abort_reason": null,
+  "agent": {
+    "kind": "claude",
+    "model": null
+  },
+  "budget": {
+    "max_scenarios": 2,
+    "max_turns": 25,
+    "scenario_timeout": "300s",
+    "protocol_retries": 1
+  },
+  "pid": 43915,
+  "started_at": "2026-10-02T05:42:54.501873+00:00",
+  "finished_at": "2026-10-02T05:43:20.238569+00:00",
+  "results": []
+}

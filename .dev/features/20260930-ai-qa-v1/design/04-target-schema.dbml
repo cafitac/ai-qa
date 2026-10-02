@@ -1,0 +1,47 @@
+Project target_schema {
+  database_type: 'Files'
+  Note: 'ai-qa v1 has NO database. This is the logical model of one run directory (runs/<run-id>/) made of JSON files written atomically by a single process; see 11-interface-contracts.md K5 for the physical layout. Every rule marked [app] is enforced by the runner, not by a storage engine.'
+}
+
+Table runs {
+  id text [pk, note: '<env>-<UTC yyyymmddThhmmssZ>; directory name; a collision is refused [app]']
+  environment text [not null, note: 'descriptor name']
+  commits_json text [not null, note: 'service -> 40-hex commit copied from the descriptor at PREFLIGHT; immutable [app]']
+  state text [not null, note: 'CREATED|PREFLIGHT|RUNNING|COMPLETED|REFUSED|ABORTED']
+  refusal_reason text [null, note: 'login_required|environment_not_ready|no_scenarios|invalid_scenarios']
+  agent_kind text [not null, note: 'claude|codex']
+  agent_model text [null]
+  budget_json text [not null, note: 'max_scenarios, max_turns, scenario_timeout, protocol_retries']
+  pid integer [not null, note: 'runner process; stale RUNNING + dead pid = INTERRUPTED in `aiqa show`']
+  started_at text [not null, note: 'UTC ISO-8601']
+  finished_at text [null]
+  Note: 'file: run.json'
+}
+
+Table scenario_results {
+  run_id text [not null, ref: > runs.id]
+  scenario_id text [not null, note: '<service>/<id>']
+  status text [not null, note: 'PASSED|FAILED|SKIPPED']
+  reason text [null, note: 'timeout|turn_cap|agent_protocol|no_evidence|out_of_scope|agent_error; null when the agent verdict stands']
+  summary text [not null]
+  checks_json text [null, note: 'agent checks: expect, ok, observed']
+  turns integer [not null, default: 0]
+  seconds real [not null, default: 0]
+
+  indexes {
+    (run_id, scenario_id) [pk, note: 'one result per scenario per run [app]']
+  }
+  Note: 'file: scenarios/<service>__<id>/result.json (also embedded in run.json)'
+}
+
+Table evidence {
+  run_id text [not null, ref: > runs.id]
+  scenario_id text [not null]
+  type text [not null, note: 'screenshot|log|http (qa-report/v1 enum)']
+  uri text [not null, note: 'path relative to the run directory']
+
+  indexes {
+    (run_id, scenario_id, uri) [pk]
+  }
+  Note: 'files under scenarios/<service>__<id>/ (final.png, *.png, agent.jsonl)'
+}

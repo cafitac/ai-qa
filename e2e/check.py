@@ -70,7 +70,7 @@ def main():
     elif mode == "config":
         import yaml
 
-        from aiqa.contracts import Config, duration
+        from aiqa.contracts import Config
 
         config = Config.load()
         value = {
@@ -82,14 +82,10 @@ def main():
             },
             "agent": {"kind": "claude", "model": config.agent_model},
             "budget": {
-                "max_scenarios": min(config.max_scenarios, 2),
-                "max_turns": min(config.max_turns, 25),
-                "scenario_timeout": (
-                    config.scenario_timeout
-                    if duration(config.scenario_timeout) <= 300
-                    else "300s"
-                ),
-                "protocol_retries": min(config.protocol_retries, 1),
+                "max_scenarios": 2,
+                "max_turns": 25,
+                "scenario_timeout": "300s",
+                "protocol_retries": 1,
             },
             "runs_dir": str(config.runs_dir),
             "playwright_mcp": config.playwright_mcp,

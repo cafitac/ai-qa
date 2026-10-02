@@ -71,4 +71,11 @@ def doctor(config: Config, factory: Callable[[], Any] = playwright_factory) -> i
     print(
         f"session: {'present (0600)' if present else 'missing or unsafe permissions'}"
     )
-    return int(missing or not installed or not present)
+    service_present = config.service_token_file.is_file()
+    claude_present = config.claude_token_file.is_file()
+    print(f"service token file: {str(service_present).lower()}")
+    print(f"Claude token file: {str(claude_present).lower()}")
+    access_present = (
+        service_present if config.access_mode == "service_token" else present
+    )
+    return int(missing or not installed or not access_present)

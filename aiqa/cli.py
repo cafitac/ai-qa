@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -33,15 +34,32 @@ def main(
         help="fake is development-only: no browser or real agent",
     )
     run.add_argument("--config", type=Path)
+    run.add_argument("--access", choices=["session", "service-token"])
+    run.add_argument("--run-id-file", type=Path)
+    prune = commands.add_parser("prune")
+    prune.add_argument("--keep", type=int, required=True)
+    prune.add_argument("--config", type=Path)
     show = commands.add_parser("show")
     show.add_argument("run_id", nargs="?")
     show.add_argument("--config", type=Path)
     for name in ("login", "doctor"):
         command = commands.add_parser(name)
         command.add_argument("--config", type=Path)
+    commands.choices["doctor"].add_argument(
+        "--access", choices=["session", "service-token"]
+    )
     args = parser.parse_args(argv)
     try:
         config = Config.load(args.config)
+        if args.command == "prune":
+            storage = RunStorage(config.runs_dir)
+            for removed in storage.prune(args.keep):
+                print(f"removed: {removed}")
+            for skipped in storage.prune_skipped:
+                print(f"skipped: {skipped}")
+            return 0
+        if args.command in ("run", "doctor") and args.access:
+            config = replace(config, access_mode=args.access.replace("-", "_"))
         if args.command == "login":
             from .browser import PlaywrightSession
 
@@ -86,7 +104,19 @@ def main(
             errors = dependency_errors(config, agent)
             if errors:
                 raise InvalidInput("; ".join(errors))
-        browser = PlaywrightSession(config) if agent != "fake" else None
+        from .browser import ServiceTokenPreflight
+
+        if config.access_mode == "service_token" and args.descriptor is None:
+            raise InvalidInput("Service-token mode requires --descriptor")
+        browser = (
+            (
+                ServiceTokenPreflight(config)
+                if config.access_mode == "service_token"
+                else PlaywrightSession(config)
+            )
+            if agent != "fake"
+            else None
+        )
         if args.descriptor:
             descriptor_source = FileDescriptorSource(args.descriptor)
         else:
@@ -106,6 +136,7 @@ def main(
             browser_session=browser,
             agent_kind=agent,
             clock=clock,
+            run_id_file=args.run_id_file,
         )
         code = usecase.execute(args.environment, tuple(args.tag), tuple(args.only))
         if usecase.last_run:

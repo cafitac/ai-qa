@@ -7,8 +7,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
-from .contracts import InvalidInput, load_json
+from .contracts import Config, InvalidInput, load_json
 from .run import Evidence, ScenarioResult
+from .secrets import RunSecrets
 from .storage import atomic_write, below_directory
 
 PATTERN = re.compile(
@@ -17,13 +18,28 @@ PATTERN = re.compile(
 
 
 class Redactor:
-    def __init__(self, cookie_values: tuple[str, ...] = ()):
-        self.cookies = tuple(v.encode() for v in cookie_values if len(v) >= 20)
+    def __init__(
+        self, cookie_values: tuple[str, ...] = (), secret_values: tuple[str, ...] = ()
+    ):
+        self.cookies = tuple(v.encode() for v in cookie_values if len(v) >= 20) + tuple(
+            v.encode() for v in secret_values if v
+        )
 
     @classmethod
-    def from_state(cls, state: Path | None, access_team_domain: str = "") -> Redactor:
+    def from_state(
+        cls,
+        state: Path | None,
+        access_team_domain: str = "",
+        config: Config | None = None,
+        loaded_secrets: RunSecrets | None = None,
+    ) -> Redactor:
+        secrets = (
+            loaded_secrets.values()
+            if loaded_secrets is not None
+            else (RunSecrets.load(config).values() if config is not None else ())
+        )
         if state is None:
-            return cls()
+            return cls(secret_values=secrets)
         data = load_json(state)
         if not isinstance(data, dict):
             raise InvalidInput("Invalid session state")
@@ -38,7 +54,8 @@ class Redactor:
                     access_team_domain
                     and cookie.get("domain", "").lstrip(".") == access_team_domain
                 )
-            )
+            ),
+            secret_values=secrets,
         )
 
     def scan(self, directory: Path) -> bool:

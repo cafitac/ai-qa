@@ -181,12 +181,16 @@ class Config:
     environment_domain: str = "cafitac.com"
     agent_kind: str = "claude"
     agent_model: str | None = None
+    agent_browser: str | None = None
     max_scenarios: int = 20
     max_turns: int = 25
     scenario_timeout: str = "300s"
     protocol_retries: int = 1
     runs_dir: Path = Path("runs")
     state_file: Path = Path("~/.config/aiqa/access-state.json")
+    access_mode: str = "session"
+    service_token_file: Path = Path("/run/secrets/access_service_token.json")
+    claude_token_file: Path = Path("/run/secrets/claude_token")
     playwright_mcp: str | None = "@playwright/mcp@0.0.83"
 
     @classmethod
@@ -206,10 +210,34 @@ class Config:
                 environment_path(env, "AIQA_STATE_FILE")
                 or "~/.config/aiqa/access-state.json"
             )
-            if "\x00" in runs_path or "\x00" in state_path:
+            service_path = environment_path(env, "AIQA_SERVICE_TOKEN_FILE") or d.get(
+                "access", {}
+            ).get("service_token_file", "/run/secrets/access_service_token.json")
+            claude_path = environment_path(env, "AIQA_CLAUDE_TOKEN_FILE") or agent.get(
+                "token_file", "/run/secrets/claude_token"
+            )
+            browser = environment_path(env, "AIQA_AGENT_BROWSER") or agent.get(
+                "browser"
+            )
+            if browser not in (
+                None,
+                "chrome",
+                "chromium",
+                "firefox",
+                "webkit",
+                "msedge",
+            ):
+                raise ValueError("Invalid browser")
+            if any(
+                "\x00" in p for p in (runs_path, state_path, service_path, claude_path)
+            ):
                 raise ValueError("Invalid path")
             return cls(
                 **hub,
+                access_mode=d.get("access", {}).get("mode", "session"),
+                service_token_file=Path(service_path).expanduser(),
+                claude_token_file=Path(claude_path).expanduser(),
+                agent_browser=browser,
                 agent_kind=agent.get("kind", "claude"),
                 agent_model=agent.get("model"),
                 **budget,

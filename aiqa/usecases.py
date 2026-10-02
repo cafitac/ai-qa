@@ -178,7 +178,9 @@ class RunScenarios:
         verdict_gate: VerdictGate | None = None,
         agent_kind: str | None = None,
         clock: Callable[[], datetime] = default_clock,
+        run_id_file: Path | None = None,
     ):
+        self.run_id_file = run_id_file
         self.clock = clock
         self.descriptor_source = descriptor_source
         self.scenario_source = scenario_source
@@ -300,13 +302,31 @@ class RunScenarios:
         )
         self.last_run = run
         self.storage.save(run)
+        if self.run_id_file is not None:
+            atomic_write(self.run_id_file, path.name + "\n")
         run.transition("PREFLIGHT")
         self.storage.save(run)
         input_reason = "invalid_descriptor"
         state: Path | None = None
         browser = self.browser_session
         try:
-            if browser:
+            from .agents.claude import ClaudeCodeRunner
+            from .browser import ServiceTokenPreflight
+            from .secrets import RunSecrets
+
+            try:
+                secrets = RunSecrets.load(
+                    cfg, claude=isinstance(self.agent_runner, ClaudeCodeRunner)
+                )
+            except InvalidInput:
+                raise Refused(
+                    "login_required", "Secret file is unreadable or invalid"
+                ) from None
+            if isinstance(self.agent_runner, ClaudeCodeRunner):
+                self.agent_runner.secrets = secrets
+            if isinstance(browser, ServiceTokenPreflight):
+                browser.secrets = secrets
+            if browser and cfg.access_mode == "session":
                 state = boundary_call(
                     "Browser", lambda: browser.preflight(cfg.dashboard_url)
                 )
@@ -360,6 +380,10 @@ class RunScenarios:
             if not scenarios:
                 raise Refused("no_scenarios")
             if browser:
+                from .browser import ServiceTokenPreflight
+
+                if isinstance(browser, ServiceTokenPreflight):
+                    browser.origins = origins
                 state = boundary_call("Browser", lambda: browser.preflight(entry))
             run.start(descriptor.commits(), [s.qualified_id for s in scenarios])
             self.storage.save(run)
@@ -527,7 +551,9 @@ class RunScenarios:
                                 from .redact import Redactor
 
                                 result = Redactor.from_state(
-                                    state, cfg.access_team_domain
+                                    state,
+                                    cfg.access_team_domain,
+                                    loaded_secrets=secrets,
                                 ).apply(result, output_dir, path)
                                 if (
                                     result.reason == "agent_error"
@@ -575,7 +601,7 @@ class RunScenarios:
                             from .redact import Redactor
 
                             redactor = Redactor.from_state(
-                                state, cfg.access_team_domain
+                                state, cfg.access_team_domain, loaded_secrets=secrets
                             )
                             for attempt_dir in folder.glob("attempt-*"):
                                 if (
@@ -594,9 +620,9 @@ class RunScenarios:
                         )
                 from .redact import Redactor
 
-                result = Redactor.from_state(state, cfg.access_team_domain).apply(
-                    result, folder, path
-                )
+                result = Redactor.from_state(
+                    state, cfg.access_team_domain, loaded_secrets=secrets
+                ).apply(result, folder, path)
                 run.record(result)
                 write_json(folder / "result.json", result.as_dict())
                 self.storage.save(run)

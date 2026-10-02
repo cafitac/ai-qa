@@ -133,10 +133,10 @@ violations; timeout is decided by the process wait timeout, excluding cleanup.
 
 The script pins Claude in both the command and generated configs, preserving the
 owner’s hub (including environment domain), model, MCP and runs directory settings.
-It clamps scenarios to min(owner, 2), shared protocol retries to min(owner, 1),
-normal-run turns to min(owner, 25), and normal-run timeout to min(owner, 300 s).
+It pins B1/B2 to 2 scenarios, 1 shared protocol retry, 25 turns and 300 seconds,
+independent of owner budget settings.
 The capped run uses one turn. Before each run it checks the call cap against a
-reservation of clamped scenarios + retries, or 1 + retries for the `--only` run.
+reservation of pinned scenarios + retries, or 1 + retries for the `--only` run.
 It counts direct scenario attempt directories as calls. `AIQA_CALL_CAP` defaults
 to 30 and covers this invocation; the operator must also respect the sprint-wide
 remaining allowance. It never prints command output containing agent text or
@@ -144,3 +144,66 @@ credentials. A trap deletes both test environments and asserts empty inventories
 cleanup failure is an error requiring the owner to retry. Evidence remains under
 the configured runs directory, including on failure. The script creates/deletes preview environments
 and makes real subscription agent calls; unit tests do neither.
+
+Unattended Access and container usage:
+
+```yaml
+apiVersion: ai-qa/v1
+access:
+  mode: service_token # default: session
+  service_token_file: /run/secrets/access_service_token.json
+agent:
+  token_file: /run/secrets/claude_token
+runs_dir: /runs
+```
+
+`AIQA_SERVICE_TOKEN_FILE` and `AIQA_CLAUDE_TOKEN_FILE` override these paths.
+The Access JSON contains `client_id` and `client_secret`; the Claude file contains
+its subscription OAuth token. `aiqa doctor` reports only file presence booleans;
+in a container use `aiqa doctor --access service-token` so the check matches `run`.
+Service-token mode requires `--descriptor`: it exchanges credentials at the entry
+origin, follows only entry/team redirects without forwarding secret headers, and
+passes temporary HttpOnly Access cookies to the browser. Local storage is omitted.
+The entry URL must be an HTTPS `phub-<env>.<environment_domain>` host on the
+default port, otherwise the run is refused before any credential is sent.
+Only the entry origin is authenticated (one exchange per run). preview-hub serves
+every service of an environment under that one origin; a descriptor whose services
+use other hosts would need their own Access session and is not supported in this mode.
+Claude receives its token only through its child process environment. Tokens and
+client IDs join the existing redaction set (exact values; each must be at least 20 characters). Only Access
+cookie values retain the minimum length of 20 characters.
+
+The image pins Claude Code 2.1.285 and Playwright MCP 0.0.83, runs as UID 10001,
+and includes Chromium. Build and run with owner-installed, read-only secrets:
+
+```sh
+docker build -t phub/aiqa:local .
+docker run -d --name phub-aiqa \
+  -e AIQA_RUNS_DIR=/runs \
+  -v phub-aiqa-runs:/runs \
+  -v /opt/phub/secrets/claude_token:/run/secrets/claude_token:ro \
+  -v /opt/phub/secrets/access_service_token.json:/run/secrets/access_service_token.json:ro \
+  phub/aiqa:local
+docker exec phub-aiqa aiqa run demo --descriptor /runs/inbox/demo.json \
+  --access service-token --run-id-file /runs/inbox/demo.runid
+docker exec phub-aiqa aiqa prune --keep 50
+```
+
+Ensure the mounted files are readable by UID 10001. Mount no Docker socket or
+GitHub credentials. Put the descriptor in the runs volume before invoking the run.
+`--run-id-file PATH` atomically writes the ID immediately after creating the run
+directory, including for refused runs. `prune --keep N` removes oldest terminal
+run directories beyond N and prints each removed ID; unrelated directories,
+symlinks and live runs are preserved. Negative N is rejected.
+
+The container sets `AIQA_AGENT_BROWSER=chromium` (also configurable as
+`agent.browser`); an unset value preserves the MacBook Chrome default. It invokes
+preinstalled `playwright-mcp` only when its resolved package.json identifies
+`@playwright/mcp` with the exact version pinned in `playwright_mcp`, avoiding npx
+downloads. Missing, unreadable or mismatched installations fall back to npx.
+Chromium is installed with that package's own playwright-core CLI; Python's
+Chromium is also retained for doctor and preflight. Secret files are validated
+once during run preflight, and only the ones the run uses: the service-token file
+in service-token mode and the Claude token file for the Claude agent. Invalid files
+refuse the run with `login_required`.
+Prune reports invalid or unreadable run records as `skipped` and preserves them.

@@ -72,12 +72,12 @@ def test_success_assertions_reject_bad_evidence(tmp_path, failure):
 @pytest.mark.parametrize(
     "scenarios,turns,timeout,retries,expected_budget",
     [
-        (7, 9, "42s", 0, (2, 9, "42s", 0)),
-        (1, 50, "6m", 1, (1, 25, "300s", 1)),
-        (2, 25, "5m", 1, (2, 25, "5m", 1)),
+        (7, 9, "42s", 0, (2, 25, "300s", 1)),
+        (1, 50, "6m", 1, (2, 25, "300s", 1)),
+        (2, 25, "5m", 1, (2, 25, "300s", 1)),
     ],
 )
-def test_generated_configs_preserve_environment_and_clamp_budget(
+def test_generated_configs_preserve_environment_and_pin_budget(
     tmp_path, monkeypatch, capsys, scenarios, turns, timeout, retries, expected_budget
 ):
     import yaml
@@ -128,8 +128,8 @@ def test_generated_configs_preserve_environment_and_clamp_budget(
     assert Config.load(capped).agent_model == "synthetic-model"
     main = runpy.run_path(str(Path(__file__).parents[1] / "e2e/check.py"))["main"]
     for config, extra, reservation in (
-        (normal, [], expected_budget[0] + retries),
-        (capped, ["--only", "frontend/seed-notes-listed"], 1 + retries),
+        (normal, [], expected_budget[0] + expected_budget[3]),
+        (capped, ["--only", "frontend/seed-notes-listed"], 1 + expected_budget[3]),
     ):
         monkeypatch.setattr(
             "sys.argv", ["check.py", "reservation", str(config), *extra]

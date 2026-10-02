@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -50,6 +51,7 @@ RUN_ID = re.compile(r"[a-z][a-z0-9-]{1,30}-[0-9]{8}T[0-9]{6}Z")
 class RunStorage:
     def __init__(self, root: Path):
         self.root = root.resolve()
+        self.prune_skipped: list[str] = []
 
     def create(self, environment: str, at: datetime | None = None) -> Path:
         env_name(environment)
@@ -76,6 +78,36 @@ class RunStorage:
             key=lambda run_id: (run_id[-16:], run_id),
             reverse=True,
         )
+
+    def prune(self, keep: int) -> list[str]:
+        self.prune_skipped = []
+        if keep < 0:
+            raise InvalidInput("--keep must be non-negative")
+        candidates = [
+            p
+            for p in self.root.glob("*")
+            if RUN_ID.fullmatch(p.name)
+            and p.is_dir()
+            and not p.is_symlink()
+            and (p / "run.json").is_file()
+            and not (p / "run.json").is_symlink()
+        ]
+        candidates.sort(key=lambda p: (p.name[-16:], p.name), reverse=True)
+        removed: list[str] = []
+        for path in candidates[keep:]:
+            try:
+                data = self.load(path.name, check_liveness=True)
+            except (InvalidInput, OSError, UnicodeError):
+                self.prune_skipped.append(path.name)
+                continue
+            if data["state"] in ("CREATED", "PREFLIGHT", "RUNNING"):
+                continue
+            try:
+                shutil.rmtree(path)
+            except FileNotFoundError:
+                continue
+            removed.append(path.name)
+        return removed
 
     def load(
         self, run_id: str | None = None, *, check_liveness: bool = False

@@ -1631,3 +1631,18 @@ def test_login_drops_parent_scoped_access_cookie(tmp_path):
         PlaywrightSession(config, lambda: fake).login()
     assert not config.state_file.exists()
     assert fake.closed
+
+
+def test_doctor_access_flag_selects_service_token_mode(context, monkeypatch):
+    from aiqa.cli import main
+
+    seen = []
+    monkeypatch.setattr(
+        "aiqa.cli.Config.load", lambda path: Config(state_file=context.storage_state)
+    )
+    monkeypatch.setattr(
+        "aiqa.doctor.doctor", lambda config: seen.append(config.access_mode) or 0
+    )
+    assert main(["doctor", "--access", "service-token"]) == 0
+    assert main(["doctor"]) == 0
+    assert seen == ["service_token", "session"]

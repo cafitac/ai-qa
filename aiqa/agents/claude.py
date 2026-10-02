@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import stat
 import subprocess
@@ -15,6 +16,7 @@ from typing import Any, cast
 from ..contracts import PLAYWRIGHT_MCP_PATTERN, Config, InvalidInput, Scenario
 from ..ports import AgentContext, AgentOutput
 from ..screenshots import is_screenshot
+from ..secrets import RunSecrets
 from ..storage import below_directory
 
 TOOLS = tuple(
@@ -69,6 +71,7 @@ def mcp_args(config: Config, context: AgentContext) -> list[str]:
     return [
         "-y",
         config.playwright_mcp,
+        *(["--browser", config.agent_browser] if config.agent_browser else []),
         "--headless",
         "--isolated",
         "--storage-state",
@@ -78,6 +81,26 @@ def mcp_args(config: Config, context: AgentContext) -> list[str]:
         "--output-dir",
         str(context.output_dir.resolve()),
     ]
+
+
+def installed_mcp_matches(binary: str, package: str) -> bool:
+    # npm links the executable into the installed package (local or global).
+    try:
+        for directory in Path(binary).resolve(strict=True).parents:
+            manifest = directory / "package.json"
+            if not manifest.is_file():
+                continue
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return False
+            data = cast(dict[str, object], data)
+            return (
+                data.get("name") == "@playwright/mcp"
+                and data.get("version") == package.rsplit("@", 1)[1]
+            )
+    except (OSError, UnicodeError, ValueError):
+        pass
+    return False
 
 
 def parse_stream(path: Path) -> tuple[str, int, bool]:
@@ -218,6 +241,7 @@ class ClaudeCodeRunner:
         monotonic: Callable[[], float] = time.monotonic,
     ):
         self.config = config
+        self.secrets: RunSecrets | None = None
         self.launcher = launcher
         self.monotonic = monotonic
 
@@ -250,8 +274,26 @@ class ClaudeCodeRunner:
             command += ["--model", context.model]
         return command
 
+    def child_environment(self) -> dict[str, str]:
+        env = os.environ.copy()
+        secrets = (
+            self.secrets if self.secrets is not None else RunSecrets.load(self.config)
+        )
+        if secrets.claude:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = secrets.claude
+        return env
+
     def run(self, scenario: Scenario, context: AgentContext) -> AgentOutput:
         args = mcp_args(self.config, context)
+        command = "npx"
+        binary = shutil.which("playwright-mcp")
+        if (
+            binary
+            and self.config.playwright_mcp
+            and installed_mcp_matches(binary, self.config.playwright_mcp)
+        ):
+            command = "playwright-mcp"
+            args = args[2:]
         transcript = context.output_dir / "agent.jsonl"
         started = self.monotonic()
         timed_out = False
@@ -267,7 +309,7 @@ class ClaudeCodeRunner:
                     json.dump(
                         {
                             "mcpServers": {
-                                "playwright": {"command": "npx", "args": args}
+                                "playwright": {"command": command, "args": args}
                             }
                         },
                         handle,
@@ -279,6 +321,7 @@ class ClaudeCodeRunner:
                     process = self.launcher(
                         self.command(scenario, context, mcp),
                         cwd=directory,
+                        env=self.child_environment(),
                         stdin=subprocess.DEVNULL,
                         stdout=log,
                         stderr=stderr,

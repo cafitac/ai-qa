@@ -134,13 +134,15 @@ def descriptor_probe(source: DescriptorSource) -> ReadinessProbe:
     def probe(environment: str) -> tuple[str, ...]:
         try:
             current = source.get(environment)
-        except (OSError, ValueError, InvalidInput):
+        except Exception:  # noqa: BLE001 - an unreadable probe is no evidence
             return ()
         if current is None:
             return ()
         down = tuple(
             s["name"] for s in current.data["services"] if s["health"] != "HEALTHY"
         )
+        if not down and current.data["state"] != "READY":
+            return (f"state={current.data['state']}",)
         if not down and current.data["readiness"]["allHealthy"] is not True:
             return ("readiness",)
         return down

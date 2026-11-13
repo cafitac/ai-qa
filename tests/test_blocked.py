@@ -6,7 +6,7 @@ from test_core import descriptor, fixed_clock, main, scenarios
 from aiqa.contracts import Config, EnvironmentDescriptor, validate
 from aiqa.fakes import FakeAgentRunner, FileDescriptorSource, FileScenarioSource
 from aiqa.storage import RunStorage
-from aiqa.usecases import RunScenarios, descriptor_probe, exit_code
+from aiqa.usecases import Refused, RunScenarios, descriptor_probe, exit_code
 
 DOWN, UP = ("web",), ()
 
@@ -88,6 +88,29 @@ def test_probe_error_or_missing_descriptor_keeps_failed(paths):
     assert uc.readiness_probe("demo") == UP
     d.write_text("{")
     assert uc.readiness_probe("demo") == UP
+
+
+@pytest.mark.parametrize(
+    "error", [Refused("login_required"), RuntimeError("playwright"), TimeoutError()]
+)
+def test_unreadable_probe_keeps_failed_and_run_continues(paths, error):
+    class Unreadable:
+        def get(self, environment):
+            raise error
+
+    uc = make(paths, {"web/test-0": "FAILED"}, None)
+    uc.readiness_probe = descriptor_probe(Unreadable())
+    assert uc.execute("demo") == 1
+    assert uc.last_run.state == "COMPLETED"
+    assert [r.status for r in uc.last_run.results] == ["FAILED", "PASSED"]
+
+
+def test_probe_reports_state_left_ready(paths):
+    class Gone:
+        def get(self, environment):
+            return EnvironmentDescriptor.parse({**descriptor(), "state": "DELETING"})
+
+    assert descriptor_probe(Gone())("demo") == ("state=DELETING",)
 
 
 def test_descriptor_probe_flips_to_blocked_with_evidence(paths):

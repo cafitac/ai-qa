@@ -11,6 +11,7 @@ from urllib.parse import urljoin
 from .clock import default_clock
 from .contracts import (
     Config,
+    EnvironmentDescriptor,
     InvalidInput,
     Scenario,
     duration,
@@ -128,6 +129,17 @@ def exit_code(statuses: Iterable[str]) -> int:
 ReadinessProbe = Callable[[str], tuple[str, ...]]
 
 
+def unready_parts(descriptor: EnvironmentDescriptor) -> tuple[str, ...]:
+    """Pure readiness evidence: unhealthy service names, else why the environment is not READY."""
+    data = descriptor.data
+    down = tuple(s["name"] for s in data["services"] if s["health"] != "HEALTHY")
+    if down:
+        return down
+    if data["state"] != "READY":
+        return (f"state={data['state']}",)
+    return () if data["readiness"]["allHealthy"] is True else ("readiness",)
+
+
 def descriptor_probe(source: DescriptorSource) -> ReadinessProbe:
     """Independent readiness evidence: re-read the descriptor, never the agent."""
 
@@ -136,16 +148,7 @@ def descriptor_probe(source: DescriptorSource) -> ReadinessProbe:
             current = source.get(environment)
         except Exception:  # noqa: BLE001 - an unreadable probe is no evidence
             return ()
-        if current is None:
-            return ()
-        down = tuple(
-            s["name"] for s in current.data["services"] if s["health"] != "HEALTHY"
-        )
-        if not down and current.data["state"] != "READY":
-            return (f"state={current.data['state']}",)
-        if not down and current.data["readiness"]["allHealthy"] is not True:
-            return ("readiness",)
-        return down
+        return () if current is None else unready_parts(current)
 
     return probe
 

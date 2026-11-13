@@ -6,7 +6,13 @@ from test_core import descriptor, fixed_clock, main, scenarios
 from aiqa.contracts import Config, EnvironmentDescriptor, validate
 from aiqa.fakes import FakeAgentRunner, FileDescriptorSource, FileScenarioSource
 from aiqa.storage import RunStorage
-from aiqa.usecases import Refused, RunScenarios, descriptor_probe, exit_code
+from aiqa.usecases import (
+    Refused,
+    RunScenarios,
+    descriptor_probe,
+    exit_code,
+    unready_parts,
+)
 
 DOWN, UP = ("web",), ()
 
@@ -105,12 +111,26 @@ def test_unreadable_probe_keeps_failed_and_run_continues(paths, error):
     assert [r.status for r in uc.last_run.results] == ["FAILED", "PASSED"]
 
 
-def test_probe_reports_state_left_ready(paths):
-    class Gone:
-        def get(self, environment):
-            return EnvironmentDescriptor.parse({**descriptor(), "state": "DELETING"})
-
-    assert descriptor_probe(Gone())("demo") == ("state=DELETING",)
+@pytest.mark.parametrize(
+    "change,expected",
+    [
+        ({}, ()),
+        ({"state": "DELETING"}, ("state=DELETING",)),
+        (
+            {"readiness": {"allHealthy": False, "checkedAt": "2040-01-15T00:00:00Z"}},
+            ("readiness",),
+        ),
+        (
+            {"services": [{**descriptor()["services"][0], "health": "STARTING"}]},
+            ("web",),
+        ),
+    ],
+)
+def test_unready_parts_table(change, expected):
+    assert (
+        unready_parts(EnvironmentDescriptor.parse({**descriptor(), **change}))
+        == expected
+    )
 
 
 def test_descriptor_probe_flips_to_blocked_with_evidence(paths):

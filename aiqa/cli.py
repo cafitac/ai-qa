@@ -11,7 +11,7 @@ from .clock import default_clock
 from .contracts import Config, InvalidInput
 from .fakes import FakeAgentRunner, FileDescriptorSource, FileScenarioSource
 from .storage import RunStorage
-from .usecases import Refused, RunScenarios
+from .usecases import Refused, RunScenarios, exit_code
 
 
 def main(
@@ -93,7 +93,7 @@ def main(
             if data["refusal_reason"]:
                 print(data["refusal_reason"])
             if data["state"] == "COMPLETED":
-                return int(any(r["status"] == "FAILED" for r in data["results"]))
+                return exit_code(r["status"] for r in data["results"])
             if data["state"] == "REFUSED":
                 return (
                     2

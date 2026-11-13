@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -119,6 +119,42 @@ class JsonVerdictGate:
         return FullVerdictGate().accept(scenario, output, transcript, files, caps)
 
 
+def exit_code(statuses: Iterable[str]) -> int:
+    """K2 reducer shared by `run` and `show`: FAILED beats BLOCKED beats clean."""
+    seen = set(statuses)
+    return 1 if "FAILED" in seen else 6 if "BLOCKED" in seen else 0
+
+
+ReadinessProbe = Callable[[str], tuple[str, ...]]
+
+
+def descriptor_probe(source: DescriptorSource) -> ReadinessProbe:
+    """Independent readiness evidence: re-read the descriptor, never the agent."""
+
+    def probe(environment: str) -> tuple[str, ...]:
+        try:
+            current = source.get(environment)
+        except (OSError, ValueError, InvalidInput):
+            return ()
+        if current is None:
+            return ()
+        down = tuple(
+            s["name"] for s in current.data["services"] if s["health"] != "HEALTHY"
+        )
+        if not down and current.data["readiness"]["allHealthy"] is not True:
+            return ("readiness",)
+        return down
+
+    return probe
+
+
+def report_status(result: ScenarioResult) -> tuple[str, str]:
+    """qa-report/v1 has no BLOCKED: project it to SKIPPED, reason in the summary."""
+    if result.status != "BLOCKED":
+        return result.status, result.summary
+    return "SKIPPED", f"BLOCKED({result.reason}): {result.summary}"
+
+
 def report(run: Run) -> dict[str, object]:
     return validate(
         "qa-report",
@@ -132,14 +168,14 @@ def report(run: Run) -> dict[str, object]:
             "scenarios": [
                 {
                     "id": r.scenario_id,
-                    "status": r.status,
-                    "summary": r.summary,
+                    "status": report_status(r)[0],
+                    "summary": report_status(r)[1],
                     "evidence": [{"type": e.type, "uri": e.uri} for e in r.evidence],
                 }
                 for r in run.results
             ],
             "summary": {
-                status.lower(): sum(r.status == status for r in run.results)
+                status.lower(): sum(report_status(r)[0] == status for r in run.results)
                 for status in ("PASSED", "FAILED", "SKIPPED")
             },
         },
@@ -179,8 +215,10 @@ class RunScenarios:
         agent_kind: str | None = None,
         clock: Callable[[], datetime] = default_clock,
         run_id_file: Path | None = None,
+        readiness_probe: ReadinessProbe | None = None,
     ):
         self.run_id_file = run_id_file
+        self.readiness_probe = readiness_probe or descriptor_probe(descriptor_source)
         self.clock = clock
         self.descriptor_source = descriptor_source
         self.scenario_source = scenario_source
@@ -278,6 +316,29 @@ class RunScenarios:
             )
         except OSError:
             pass
+
+    def _classify(
+        self, environment: str, result: ScenarioResult, folder: Path, run_dir: Path
+    ) -> ScenarioResult:
+        """FAILED becomes BLOCKED(environment) only on independent probe evidence."""
+        if result.status != "FAILED":
+            return result
+        down = self.readiness_probe(environment)
+        if not down:
+            return result
+        write_json(
+            folder / "readiness-probe.json",
+            {"checkedAt": self.clock().isoformat(), "unhealthy": list(down)},
+        )
+        uri = (folder / "readiness-probe.json").relative_to(run_dir).as_posix()
+        text = f"Readiness probe reports unhealthy: {', '.join(down)}; agent: "
+        return replace(
+            result,
+            status="BLOCKED",
+            reason="environment",
+            summary=(text + result.summary)[:500],
+            evidence=(*result.evidence, Evidence("log", uri)),
+        )
 
     def _redaction_notes(self) -> tuple[str, ...]:
         return ("Redaction: scanned attempt artifacts",) if self.redaction_ran else ()
@@ -620,6 +681,7 @@ class RunScenarios:
                         )
                 from .redact import Redactor
 
+                result = self._classify(environment, result, folder, path)
                 result = Redactor.from_state(
                     state, cfg.access_team_domain, loaded_secrets=secrets
                 ).apply(result, folder, path)
@@ -638,7 +700,7 @@ class RunScenarios:
                     + self._redaction_notes(),
                 ),
             )
-            return int(any(r.status == "FAILED" for r in run.results))
+            return exit_code(r.status for r in run.results)
         except Refused as exc:
             if run.state != "PREFLIGHT":
                 run.abort_reason = exc.reason

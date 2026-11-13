@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "ac": {"type": "string", "pattern": "^AC[0-9]{1,4}(?![\\s\\S])"},
+    "req": {"type": "string", "pattern": "^REQ-[0-9]{1,4}(?![\\s\\S])"},
+    "cell": {"type": "string", "pattern": "^C-[0-9]{1,5}(?![\\s\\S])"},
+    "scope": {"enum": ["in", "regression", "hold", "excluded"]},
+    "risk": {"enum": ["R1", "R2", "R3", "R4"]},
+    "count": {"type": "integer", "minimum": 0, "maximum": 1000},
+    "budget": {
+      "type": "object",
+      "properties": {
+        "min": {"$ref": "#/$defs/count"},
+        "minNegative": {"$ref": "#/$defs/count"},
+        "minBoundary": {"$ref": "#/$defs/count"},
+        "nonHappyShare": {"type": "number", "minimum": 0, "maximum": 1}
+      },
+      "required": ["min", "minNegative", "minBoundary", "nonHappyShare"],
+      "additionalProperties": false
+    }
+  },
+  "type": "object",
+  "properties": {
+    "apiVersion": {"const": "ai-qa/qa-design/v1"},
+    "feature": {"type": "string", "minLength": 1, "maxLength": 200},
+    "requirements": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 500,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"$ref": "#/$defs/req"},
+          "ac": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/ac"}},
+          "scope": {"$ref": "#/$defs/scope"},
+          "risk": {"$ref": "#/$defs/risk"}
+        },
+        "required": ["id", "ac", "scope", "risk"],
+        "additionalProperties": false
+      }
+    },
+    "matrix": {
+      "type": "array",
+      "maxItems": 5000,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"$ref": "#/$defs/cell"},
+          "req": {"$ref": "#/$defs/req"},
+          "axis": {"enum": ["display", "state", "validation", "flow", "empty_error", "permission", "disabled_detail", "flag", "boundary", "i18n"]},
+          "platform": {"enum": ["web"]},
+          "source": {"enum": ["normative", "observed"]},
+          "expected": {"type": "string", "maxLength": 1000},
+          "scope": {"$ref": "#/$defs/scope"},
+          "risk": {"$ref": "#/$defs/risk"}
+        },
+        "required": ["id", "req", "axis", "platform", "source", "scope", "risk"],
+        "if": {"properties": {"source": {"const": "normative"}}},
+        "then": {"required": ["expected"], "properties": {"expected": {"pattern": "\\S"}}},
+        "additionalProperties": false
+      }
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "R1": {"$ref": "#/$defs/budget"},
+        "R2": {"$ref": "#/$defs/budget"},
+        "R3": {"$ref": "#/$defs/budget"},
+        "R4": {"$ref": "#/$defs/budget"}
+      },
+      "required": ["R1", "R2", "R3", "R4"],
+      "additionalProperties": false
+    },
+    "waivers": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "type": "object",
+        "properties": {
+          "cell": {"$ref": "#/$defs/cell"},
+          "ac": {"$ref": "#/$defs/ac"},
+          "card": {"type": "string", "pattern": "^CARD-[0-9]+(?![\\s\\S])"},
+          "reason": {"type": "string", "minLength": 1, "maxLength": 500}
+        },
+        "required": ["card", "reason"],
+        "oneOf": [{"required": ["cell"]}, {"required": ["ac"]}],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["apiVersion", "feature", "requirements", "matrix", "budget"],
+  "additionalProperties": false
+}

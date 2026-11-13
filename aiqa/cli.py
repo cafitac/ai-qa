@@ -48,8 +48,20 @@ def main(
     commands.choices["doctor"].add_argument(
         "--access", choices=["session", "service-token"]
     )
+    design = commands.add_parser("design").add_subparsers(
+        dest="design_command", required=True
+    )
+    gate = design.add_parser("check")
+    gate.add_argument("--spec", type=Path, required=True)
+    gate.add_argument("--design", type=Path, required=True)
+    gate.add_argument("--scenarios", type=Path)
+    gate.add_argument("--format", choices=["json", "text"], default="json")
     args = parser.parse_args(argv)
     try:
+        if args.command == "design":
+            from .design import run_check
+
+            return run_check(args.spec, args.design, args.scenarios, args.format)
         config = Config.load(args.config)
         if args.command == "prune":
             storage = RunStorage(config.runs_dir)

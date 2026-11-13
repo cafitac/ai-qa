@@ -73,6 +73,19 @@ uv run aiqa run demo --descriptor descriptor.json --scenarios scenarios.yaml --a
 
 Optional `aiqa.yaml` / `--config FILE` configures budgets and output paths. `AIQA_CONFIG`, `AIQA_RUNS_DIR`, and `AIQA_STATE_FILE` override their respective paths (explicit `--config` wins); empty or whitespace-only overrides are treated as unset. Defaults: 20 scenarios, 25 turns, 300 seconds, one protocol retry **per run**. The runner passes caps to adapters and rejects reported cap violations; CLI processes and their browser children are terminated as a process group at the wall-clock timeout. Scenario duration ends when the process wait completes or times out; cleanup time is excluded, and the wait timeout flag determines timeout.
 
+## QA design check
+
+`aiqa design check --spec spec.json --design qa/design.yaml [--format json|text]`
+checks a QA design (`ai-qa/qa-design/v1`) against the acceptance criteria in a
+spec export (`ai-qa/spec/v1`) without any network or run state. Exit 0: no
+gaps; 1: gaps, each `{code, subject, detail}`; 2: invalid input (unreadable or
+malformed files, schema violations, a spec and design that name different
+`feature` values, or `--scenarios`, which is not supported
+until `ai-qa/v2`). Gap codes: `G1_AC_UNMAPPED`, `G1_AC_NOT_COVERED`,
+`G1_AC_UNKNOWN`, `G2_REQ_NO_CELL`, `G3_SCOPE_MISMATCH`, `G3_RISK_MISMATCH`,
+`G5_OBSERVED_NO_EXPECTED`, `G7_DUPLICATE_ID`, `G7_DANGLING_REF`. Schemas:
+`schemas/qa-design.schema.json`, `schemas/spec.schema.json`.
+
 ## Reading a report
 
 Runs are stored in `runs/<environment>-<UTC timestamp>/`: atomic `run.json`, per-scenario `result.json`, transcripts, `summary.md`, and a schema-validated preview-hub report on completion only. Existing run ids are refused. `show` views a CREATED, PREFLIGHT, or RUNNING run with a dead pid as INTERRUPTED without rewriting history. A COMPLETED run without a valid `report.json` is shown in progress (exit 5) only while another runner process is live, and INTERRUPTED (exit 4) otherwise. Recovery computes the terminal view without PID liveness, so failed recovery writes never label the finished runner RUNNING.

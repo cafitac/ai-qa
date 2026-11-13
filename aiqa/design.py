@@ -78,9 +78,11 @@ def check(spec: Doc, design: Doc) -> list[Gap]:
 def run_check(spec: Path, design: Path, scenarios: Path | None, fmt: str) -> int:
     if scenarios is not None:
         raise InvalidInput("--scenarios is not supported until ai-qa/v2")
-    gaps = check(
-        validate("spec", load_json(spec)), validate("qa-design", load_yaml(design))
-    )
+    spec_doc = validate("spec", load_json(spec))
+    design_doc = validate("qa-design", load_yaml(design))
+    if spec_doc["feature"] != design_doc["feature"]:
+        raise InvalidInput("Spec and design name different features")
+    gaps = check(spec_doc, design_doc)
     if fmt == "json":
         print(json.dumps({"ok": not gaps, "gaps": [asdict(g) for g in gaps]}))
     else:

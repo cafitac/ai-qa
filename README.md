@@ -79,7 +79,8 @@ Optional `aiqa.yaml` / `--config FILE` configures budgets and output paths. `AIQ
 checks a QA design (`ai-qa/qa-design/v1`) against the acceptance criteria in a
 spec export (`ai-qa/spec/v1`) without any network or run state. Exit 0: no
 gaps; 1: gaps, each `{code, subject, detail}`; 2: invalid input (unreadable or
-malformed files, schema violations, or `--scenarios`, which is not supported
+malformed files, schema violations, a spec and design that name different
+`feature` values, or `--scenarios`, which is not supported
 until `ai-qa/v2`). Gap codes: `G1_AC_UNMAPPED`, `G1_AC_NOT_COVERED`,
 `G1_AC_UNKNOWN`, `G2_REQ_NO_CELL`, `G3_SCOPE_MISMATCH`, `G3_RISK_MISMATCH`,
 `G5_OBSERVED_NO_EXPECTED`, `G7_DUPLICATE_ID`, `G7_DANGLING_REF`. Schemas:

@@ -182,9 +182,20 @@ def test_cli_malformed_design_exits_2(tmp_path, raw):
     assert run(tmp_path, SPEC, DESIGN, raw=raw) == 2
 
 
+def test_cli_feature_mismatch_exits_2(tmp_path, capsys):
+    design = {**DESIGN, "feature": "other-feature"}
+    assert run(tmp_path, SPEC, design) == 2
+    assert "different features" in capsys.readouterr().out
+
+
 def test_cli_bad_spec_exits_2(tmp_path):
     assert run(tmp_path, SPEC, DESIGN) == 0
     (tmp_path / "spec.json").write_text("{not json")
     argv = ["design", "check", "--spec", str(tmp_path / "spec.json")]
     assert cli_main([*argv, "--design", str(tmp_path / "design.yaml")]) == 2
+
+
+def test_cli_missing_design_exits_2(tmp_path):
+    assert run(tmp_path, SPEC, DESIGN) == 0
+    argv = ["design", "check", "--spec", str(tmp_path / "spec.json")]
     assert cli_main([*argv, "--design", str(tmp_path / "missing.yaml")]) == 2

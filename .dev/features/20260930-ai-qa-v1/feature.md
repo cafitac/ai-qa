@@ -143,13 +143,13 @@ Given a READY preview-hub environment, one command runs natural-language E2E sce
 
 ### Q2: PR-diff scenario proposals
 
-- Status: PLANNED (coarse)
+- Status: SUPERSEDED by the agent-skills AQP pipeline (feature 20261114-ai-qa-pipeline)
 - Outcome: B6
 - Estimate: 1–2 days
 
 ### Q3: VM automation and PR comment
 
-- Status: PLANNED (coarse)
+- Status: RETIRED (QH2/QE, VM-based service identity: the VM premise is gone); service-token identity on K8s is re-cut as P10 in AQP sprint 2
 - Outcome: B7; includes a preview-hub change (service identities) and owner-installed tokens
 - Estimate: 2–4 days
 
@@ -256,3 +256,4 @@ Given a READY preview-hub environment, one command runs natural-language E2E sce
 - 2026-10-01: QU2 budget exhausted at cycle 7 (1 low); user granted the QU2-only low-findings exception QD10.
 - 2026-10-01: QU2 merged (0ee478ac) after review cycle 8 clean 2/2. QU4 reserved and claimed; owner login requested.
 - 2026-10-02: QU4 merged (62782339) after live run 1 passing B1–B5 and review cycle 3 clean 2/2. SPRINT_COMPLETE for 20260930-q1-v1.
+- 2026-11-14: Q2 superseded by the agent-skills AQP pipeline (feature 20261114-ai-qa-pipeline). Q3 (QH2/QE, VM-based service identity) retired because the VM premise is gone; service-token identity on K8s is re-cut as P10 in AQP sprint 2.

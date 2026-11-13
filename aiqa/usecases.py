@@ -130,16 +130,34 @@ ReadinessProbe = Callable[[str], tuple[str, ...]]
 
 
 def unready_parts(descriptor: EnvironmentDescriptor, at: datetime) -> tuple[str, ...]:
-    """Pure readiness evidence: unhealthy service names, else why the environment is not READY."""
+    """Pure readiness evidence; `is_ready` stays the single owner of the rule."""
     data = descriptor.data
     down = tuple(s["name"] for s in data["services"] if s["health"] != "HEALTHY")
-    if down:
+    if down or descriptor.is_ready(at):
         return down
     if datetime.fromisoformat(data["expiresAt"]) <= at:
         return ("expired",)
     if data["state"] != "READY":
         return (f"state={data['state']}",)
-    return () if data["readiness"]["allHealthy"] is True else ("readiness",)
+    return (
+        ("readiness",)
+        if data["readiness"]["allHealthy"] is not True
+        else ("no-services",)
+    )
+
+
+def blocked(
+    result: ScenarioResult, reasons: tuple[str, ...], evidence_uri: str
+) -> ScenarioResult:
+    """Pure verdict rule: a FAILED result plus independent probe evidence is BLOCKED."""
+    text = f"Readiness probe reports not ready: {', '.join(reasons)}; agent: "
+    return replace(
+        result,
+        status="BLOCKED",
+        reason="environment",
+        summary=(text + result.summary)[:500],
+        evidence=(*result.evidence, Evidence("log", evidence_uri)),
+    )
 
 
 def descriptor_probe(
@@ -334,22 +352,14 @@ class RunScenarios:
         """FAILED becomes BLOCKED(environment) only on independent probe evidence."""
         if result.status != "FAILED":
             return result
-        down = self.readiness_probe(environment)
-        if not down:
+        reasons = self.readiness_probe(environment)
+        if not reasons:
             return result
+        file = folder / "readiness-probe.json"
         write_json(
-            folder / "readiness-probe.json",
-            {"checkedAt": self.clock().isoformat(), "unhealthy": list(down)},
+            file, {"checkedAt": self.clock().isoformat(), "reasons": list(reasons)}
         )
-        uri = (folder / "readiness-probe.json").relative_to(run_dir).as_posix()
-        text = f"Readiness probe reports unhealthy: {', '.join(down)}; agent: "
-        return replace(
-            result,
-            status="BLOCKED",
-            reason="environment",
-            summary=(text + result.summary)[:500],
-            evidence=(*result.evidence, Evidence("log", uri)),
-        )
+        return blocked(result, reasons, file.relative_to(run_dir).as_posix())
 
     def _redaction_notes(self) -> tuple[str, ...]:
         return ("Redaction: scanned attempt artifacts",) if self.redaction_ran else ()

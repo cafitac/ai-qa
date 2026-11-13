@@ -81,7 +81,7 @@ def test_persisted_blocked_only_run_is_reloaded_by_show(paths, capsys):
     assert {r["status"] for r in stored["results"]} == {"BLOCKED"}
     assert {r["reason"] for r in stored["results"]} == {"environment"}
     assert main(["show", run_id]) == 6
-    assert "BLOCKED — Readiness probe reports unhealthy: web" in capsys.readouterr().out
+    assert "BLOCKED — Readiness probe reports not ready: web" in capsys.readouterr().out
 
 
 def test_agent_say_so_alone_is_not_blocked(paths):
@@ -127,6 +127,7 @@ def test_unreadable_probe_keeps_failed_and_run_continues(paths, error):
             {"services": [{**descriptor()["services"][0], "health": "STARTING"}]},
             ("web",),
         ),
+        ({"services": []}, ("no-services",)),
     ],
 )
 def test_unready_parts_table(change, expected):
@@ -158,7 +159,7 @@ def test_descriptor_probe_flips_to_blocked_with_evidence(paths):
     blocked = uc.last_run.results[0]
     assert (blocked.status, blocked.reason) == ("BLOCKED", "environment")
     probe = uc.storage.root / uc.last_run.id / blocked.evidence[-1].uri
-    assert json.loads(probe.read_text())["unhealthy"] == ["web"]
+    assert json.loads(probe.read_text())["reasons"] == ["web"]
 
 
 def test_report_projects_blocked_to_skipped(paths):

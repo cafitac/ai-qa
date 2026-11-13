@@ -129,18 +129,22 @@ def exit_code(statuses: Iterable[str]) -> int:
 ReadinessProbe = Callable[[str], tuple[str, ...]]
 
 
-def unready_parts(descriptor: EnvironmentDescriptor) -> tuple[str, ...]:
+def unready_parts(descriptor: EnvironmentDescriptor, at: datetime) -> tuple[str, ...]:
     """Pure readiness evidence: unhealthy service names, else why the environment is not READY."""
     data = descriptor.data
     down = tuple(s["name"] for s in data["services"] if s["health"] != "HEALTHY")
     if down:
         return down
+    if datetime.fromisoformat(data["expiresAt"]) <= at:
+        return ("expired",)
     if data["state"] != "READY":
         return (f"state={data['state']}",)
     return () if data["readiness"]["allHealthy"] is True else ("readiness",)
 
 
-def descriptor_probe(source: DescriptorSource) -> ReadinessProbe:
+def descriptor_probe(
+    source: DescriptorSource, clock: Callable[[], datetime] = default_clock
+) -> ReadinessProbe:
     """Independent readiness evidence: re-read the descriptor, never the agent."""
 
     def probe(environment: str) -> tuple[str, ...]:
@@ -148,7 +152,7 @@ def descriptor_probe(source: DescriptorSource) -> ReadinessProbe:
             current = source.get(environment)
         except Exception:  # noqa: BLE001 - an unreadable probe is no evidence
             return ()
-        return () if current is None else unready_parts(current)
+        return () if current is None else unready_parts(current, clock())
 
     return probe
 
@@ -223,7 +227,9 @@ class RunScenarios:
         readiness_probe: ReadinessProbe | None = None,
     ):
         self.run_id_file = run_id_file
-        self.readiness_probe = readiness_probe or descriptor_probe(descriptor_source)
+        self.readiness_probe = readiness_probe or descriptor_probe(
+            descriptor_source, clock
+        )
         self.clock = clock
         self.descriptor_source = descriptor_source
         self.scenario_source = scenario_source

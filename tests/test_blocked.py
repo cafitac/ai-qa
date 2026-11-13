@@ -1,16 +1,19 @@
 import json
+from datetime import timedelta
 
 import pytest
 from test_core import descriptor, fixed_clock, main, scenarios
 
 from aiqa.contracts import Config, EnvironmentDescriptor, validate
 from aiqa.fakes import FakeAgentRunner, FileDescriptorSource, FileScenarioSource
+from aiqa.run import Budget, Run, ScenarioResult
 from aiqa.storage import RunStorage
 from aiqa.usecases import (
     Refused,
     RunScenarios,
     descriptor_probe,
     exit_code,
+    report,
     unready_parts,
 )
 
@@ -89,7 +92,7 @@ def test_agent_say_so_alone_is_not_blocked(paths):
 
 def test_probe_error_or_missing_descriptor_keeps_failed(paths):
     d, _ = paths
-    uc = make(paths, {"web/test-0": "FAILED"}, None)
+    uc = make(paths, {}, None)
     d.write_text(json.dumps({**descriptor(), "name": "other"}))
     assert uc.readiness_probe("demo") == UP
     d.write_text("{")
@@ -127,10 +130,13 @@ def test_unreadable_probe_keeps_failed_and_run_continues(paths, error):
     ],
 )
 def test_unready_parts_table(change, expected):
-    assert (
-        unready_parts(EnvironmentDescriptor.parse({**descriptor(), **change}))
-        == expected
-    )
+    parsed = EnvironmentDescriptor.parse({**descriptor(), **change})
+    assert unready_parts(parsed, fixed_clock()) == expected
+
+
+def test_unready_parts_reports_expiry():
+    parsed = EnvironmentDescriptor.parse(descriptor())
+    assert unready_parts(parsed, fixed_clock() + timedelta(days=2)) == ("expired",)
 
 
 def test_descriptor_probe_flips_to_blocked_with_evidence(paths):
@@ -166,9 +172,16 @@ def test_report_projects_blocked_to_skipped(paths):
     assert payload["summary"] == {"passed": 1, "failed": 0, "skipped": 1}
 
 
-def test_pre_blocked_stored_run_still_loads(paths):
-    uc = make(paths, {"web/test-0": "FAILED"}, lambda e: UP)
-    assert uc.execute("demo") == 1
-    stored = RunStorage(paths[0].parent / "runs").load()
-    assert {r["status"] for r in stored["results"]} <= {"PASSED", "FAILED", "SKIPPED"}
-    assert main(["show"]) == 1
+@pytest.mark.parametrize("status,code", [("PASSED", 0), ("SKIPPED", 0), ("FAILED", 1)])
+def test_run_stored_before_blocked_still_loads(paths, status, code):
+    storage = RunStorage(paths[0].parent / "runs")
+    folder = storage.create("demo", fixed_clock())
+    run = Run(folder.name, "demo", Budget(), "fake", clock=fixed_clock)
+    run.transition("PREFLIGHT")
+    run.start({"web": "a" * 40}, ["web/test-0"])
+    run.record(ScenarioResult("web/test-0", status, "legacy"))
+    run.transition("COMPLETED")
+    storage.save(run)
+    (folder / "report.json").write_text(json.dumps(report(run)))
+    assert storage.load()["results"][0]["status"] == status
+    assert main(["show"]) == code

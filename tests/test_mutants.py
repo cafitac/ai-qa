@@ -9,7 +9,7 @@ import yaml
 from test_core import descriptor
 
 from aiqa import mutants
-from aiqa.browser import PlaywrightSession
+from aiqa.browser import PlaywrightSession, ServiceTokenPreflight
 from aiqa.cli import main as cli_main
 from aiqa.contracts import Config, EnvironmentDescriptor, InvalidInput, validate
 
@@ -166,6 +166,7 @@ def run_cli(
         return str(tmp_path / name)
 
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(mutants.Config, "load", lambda path=None: Config())
     monkeypatch.setattr(
         mutants, "playwright_http", lambda *_: nullcontext(http_for(apps))
     )
@@ -211,34 +212,80 @@ def test_malformed_catalog_or_mutant_argument_is_refused(tmp_path, monkeypatch):
         validate("mutant-catalog", {**CATALOG, "mutants": [{**ORDER, "split": "LIVE"}]})
 
 
-def test_transport_preflights_each_host_and_never_follows_redirects(monkeypatch):
-    fetched, preflights = [], []
+def test_transport_preflights_before_the_request_runtime_and_never_follows_redirects(
+    monkeypatch, tmp_path
+):
+    fetched, preflights, active = [], [], []
 
     class Context:
         def fetch(self, url, **kwargs):
             fetched.append((url, kwargs))
             status = 302 if url.endswith("/redirect") else 201
-            return SimpleNamespace(status=status, body=lambda: b'{"ok": true}')
+            body = (
+                b" " * (mutants.MAX_BODY + 1)
+                if url.endswith("/big")
+                else b'{"ok": true}'
+            )
+            return SimpleNamespace(status=status, body=lambda: body)
 
     class Factory:
         def __enter__(self):
+            assert not active, "a sync Playwright runtime cannot be nested"
+            active.append(1)
             new_context = lambda storage_state: Context()
             return SimpleNamespace(request=SimpleNamespace(new_context=new_context))
 
         def __exit__(self, *args):
-            pass
+            active.clear()
 
-    monkeypatch.setattr(
-        PlaywrightSession,
-        "preflight",
-        lambda self, url: preflights.append(url) or Path("s.json"),
-    )
-    with mutants.playwright_http(Config(), Factory) as http:
+    def preflight(self, url):
+        assert not active, "preflight must finish before the request runtime starts"
+        preflights.append(url)
+        return Path("s.json")
+
+    monkeypatch.setattr(PlaywrightSession, "preflight", preflight)
+    origins = {"https://phub-a.cafitac.com", "https://phub-b.cafitac.com"}
+    with mutants.playwright_http(Config(), origins, Factory) as http:
         assert http("POST", "https://phub-a.cafitac.com/api/notes", {"text": "x"}) == (
             201,
             {"ok": True},
         )
         assert http("GET", "https://phub-a.cafitac.com/redirect", None)[0] == 302
         assert http("GET", "https://phub-b.cafitac.com/x", None)[0] == 201
+        assert http("GET", "https://phub-b.cafitac.com/big", None) == (0, None)
+        assert http("GET", "https://other.example/x", None) == (0, None)
     assert preflights == ["https://phub-a.cafitac.com/", "https://phub-b.cafitac.com/"]
     assert all(kwargs["max_redirects"] == 0 for _, kwargs in fetched)
+
+
+def test_service_token_mode_loads_only_the_access_credentials(monkeypatch, tmp_path):
+    token = tmp_path / "token.json"
+    token.write_text(json.dumps({"client_id": "i" * 24, "client_secret": "s" * 24}))
+    (tmp_path / "broken").write_text(
+        "x"
+    )  # a broken Claude token must not block Access credentials
+    seen = []
+    monkeypatch.setattr(
+        ServiceTokenPreflight,
+        "preflight",
+        lambda self, url: seen.append(self.secrets) or Path("s.json"),
+    )
+    config = Config(
+        access_mode="service_token",
+        service_token_file=token,
+        claude_token_file=tmp_path / "broken",
+    )
+    factory = lambda: nullcontext(
+        SimpleNamespace(request=SimpleNamespace(new_context=lambda storage_state: 1))
+    )
+    with mutants.playwright_http(config, {"https://phub-a.cafitac.com"}, factory):
+        pass
+    assert [s.service for s in seen] == [("i" * 24, "s" * 24)]
+
+
+def test_no_answer_statuses_are_pinned_and_odd_array_indexes_are_missing():
+    assert mutants.NO_ANSWER == {0, 301, 302, 303, 307, 308, 401, 403, 404, 405}.union(
+        {502, 503, 504}
+    )
+    assert mutants.dig([1], "\u00b2") is mutants.MISSING
+    assert mutants.dig([{"a": 1}], "0.a") == 1

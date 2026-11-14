@@ -28,51 +28,59 @@ from .contracts import (
     url_origin,
     validate,
 )
+from .secrets import RunSecrets
 
 Http = Callable[[str, str, object], tuple[int, object]]
 # No answer from the app itself: transport error, Access redirect or denial, gateway, missing route.
 NO_ANSWER = {0, 301, 302, 303, 307, 308, 401, 403, 404, 405, 502, 503, 504}
 MISSING = object()
+MAX_BODY = 1 << 20
 
 
 @contextmanager
 def playwright_http(
-    config: Config, factory: Callable[[], Any] = playwright_factory
+    config: Config, origins: set[str], factory: Callable[[], Any] = playwright_factory
 ) -> Generator[Http]:
-    """Requests through the owner's Access session (or service token), one preflighted context per environment host; redirects are never followed."""
+    """Requests through the owner's Access session (or service token). Every origin is preflighted first and only then is
+    the request runtime started, because a sync Playwright runtime cannot be started inside a running one. Redirects are never followed."""
     kind = (
         ServiceTokenPreflight
         if config.access_mode == "service_token"
         else PlaywrightSession
     )
-    with kind(config, factory) as session, factory() as playwright:
-        contexts: dict[str, Any] = {}
+    with kind(config, factory) as session:
+        if isinstance(session, ServiceTokenPreflight):
+            session.secrets = RunSecrets.load(config, claude=False)
+        states = {o: str(session.preflight(o + "/")) for o in sorted(origins)}
+        with factory() as playwright:
+            contexts = {
+                o: playwright.request.new_context(storage_state=state)
+                for o, state in states.items()
+            }
 
-        def http(method: str, url: str, body: object) -> tuple[int, object]:
-            origin = url_origin(url)
-            if origin not in contexts:
-                state = session.preflight(origin + "/")
-                contexts[origin] = playwright.request.new_context(
-                    storage_state=str(state)
-                )
-            try:
-                response = contexts[origin].fetch(
-                    url, method=method, data=body, max_redirects=0, timeout=30_000
-                )
-                raw = response.body()
-            except playwright_errors():
-                return 0, None
-            try:
-                return response.status, parse_json(raw[: 1 << 20])
-            except InvalidInput:
-                return response.status, None
+            def http(method: str, url: str, body: object) -> tuple[int, object]:
+                if (context := contexts.get(url_origin(url))) is None:
+                    return 0, None
+                try:
+                    response = context.fetch(
+                        url, method=method, data=body, max_redirects=0, timeout=30_000
+                    )
+                    raw = response.body()
+                except playwright_errors():
+                    return 0, None
+                if len(raw) > MAX_BODY:  # never judge a truncated body
+                    return 0, None
+                try:
+                    return response.status, parse_json(raw)
+                except InvalidInput:
+                    return response.status, None
 
-        yield http
+            yield http
 
 
 def dig(value: object, path: str) -> object:
     for part in path.split("."):
-        if isinstance(value, list) and part.isdigit():
+        if isinstance(value, list) and part.isascii() and part.isdigit():
             items = cast(list[object], value)
             value = items[int(part)] if int(part) < len(items) else MISSING
         elif isinstance(value, dict):
@@ -183,7 +191,15 @@ def run(args: argparse.Namespace, clock: Callable[[], datetime]) -> int:
         given[name] = EnvironmentDescriptor.parse(load_json(Path(path)))
     baseline = EnvironmentDescriptor.parse(load_json(args.baseline))
     at, ref = clock(), catalog.get("baseline_ref", "main")
-    with playwright_http(Config.load(args.config)) as http:
+    names = {m["service"] for m in entries.values()}
+    origins = {
+        url_origin(svc["publicUrl"])
+        for desc in (baseline, *given.values())
+        if desc.is_ready(at)
+        for svc in desc.data["services"]
+        if svc["name"] in names and svc["publicUrl"]
+    }
+    with playwright_http(Config.load(args.config), origins) as http:
         results = [
             validate_mutant(entries[n], baseline, given.get(n), ref, http, at)
             for n in (given or entries)

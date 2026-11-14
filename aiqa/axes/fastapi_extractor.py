@@ -96,15 +96,13 @@ def _deps(*parts: ast.AST) -> list[tuple[ast.expr, ast.Call]]:
 
 
 def _ident(key: ast.expr) -> Any:  # only statically equal dict keys collapse
-    value = _lit(key)
     try:
+        value = ast.literal_eval(key)
         hash(value)
-    except TypeError:
-        value = None
-    if value is not None:
         return ("lit", value)
-    named = isinstance(key, ast.Name | ast.Attribute)
-    return ("src", ast.unparse(key)) if named else ("id", id(key))
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        named = isinstance(key, ast.Name | ast.Attribute)
+        return ("src", ast.unparse(key)) if named else ("id", id(key))
 
 
 def _strs(node: ast.AST | None) -> list[str] | None:

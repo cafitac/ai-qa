@@ -110,7 +110,7 @@ def test_aliases_scopes_and_unsupported_values(tmp_path: Path) -> None:
     assert sum(c["kind"] == "transition" for c in out) == 2
 
 
-def test_round5_gaps_api_route_security_dupes_limits_opts_status(
+def test_api_route_scopes_dup_keys_limits_opts_and_status_bounds(
     tmp_path: Path,
 ) -> None:
     (tmp_path / "app.py").write_text(
@@ -127,7 +127,7 @@ def test_round5_gaps_api_route_security_dupes_limits_opts_status(
         "@app.api_route('/k', **{'methods': ['POST']})\ndef k(): ...\n"
         "class M:\n n: int = Field(multiple_of=5, max_digits=7, decimal_places=2)\n"
         " s: str = Field(regex='^a', min_items=1, max_items=2)\n"
-        "TRANSITIONS = {'a': ['x'], 'a': ['y'], 'b': ['z'], nx(): ['p'], nx(): ['q']}\n"
+        "TRANSITIONS = {'a': ['x'], 'a': ['y'], 'b': ['z'], nx(): ['p'], nx(): ['q'], None: ['o'], None: ['n']}\n"
     )
     out = extract_axes(tmp_path)["cells"]
     by = {(c["kind"], c["subject"]): c.get("detail") for c in out}
@@ -145,6 +145,7 @@ def test_round5_gaps_api_route_security_dupes_limits_opts_status(
     assert edges == {f"TRANSITIONS: {e}" for e in ("'a' -> 'y'", "'b' -> 'z'")} | {
         "TRANSITIONS: nx() -> 'p'",
         "TRANSITIONS: nx() -> 'q'",
+        "TRANSITIONS: None -> 'n'",
     }
     assert ("route", "GET /f") in by and by[("route", "GET /f")] is None  # no prefix
     assert by[("role_check", "GET /n requires get_user")] == {"scopes": ["x", "y"]}

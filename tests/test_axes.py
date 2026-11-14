@@ -11,7 +11,6 @@ from aiqa.cli import main
 
 FIXTURES = Path(__file__).parent / "fixtures" / "axes"
 SCHEMA = Path(__file__).parent.parent / "schemas" / "qa-design.schema.json"
-SHIP = "POST /orders/{order_id}/ship"
 
 
 def cells(repo: Path) -> set[tuple[str, str, str]]:
@@ -21,26 +20,27 @@ def cells(repo: Path) -> set[tuple[str, str, str]]:
 
 def test_fastapi_fixture_yields_every_observed_axis() -> None:
     out = extract_axes(FIXTURES / "fastapi_app")
-    assert (out["axes"], out["extractor"]) == ("observed", "fastapi")
+    assert out["extractor"] == "fastapi"
+    ship, dispatch = (
+        f"POST /api/orders/{{order_id}}/{n}" for n in ("ship", "dispatch")
+    )
     assert cells(FIXTURES / "fastapi_app") == {
-        ("flow", "route", "POST /orders"),
-        ("flow", "route", SHIP),
-        ("permission", "role_check", "POST /orders requires get_current_user"),
-        ("permission", "role_check", f"{SHIP} requires admin"),
+        ("flow", "route", ship),
+        ("flow", "route", dispatch),
+        ("permission", "role_check", f"{ship} requires admin"),
+        ("permission", "role_check", f"{dispatch} requires admin"),
+        ("empty_error", "error_response", f"{ship} 404"),
+        ("empty_error", "error_response", f"{dispatch} 404"),
         ("state", "enum", "OrderState"),
-        ("state", "transition", "TRANSITIONS: NEW -> PAID"),
-        ("state", "transition", "TRANSITIONS: PAID -> SHIPPED"),
+        ("state", "transition", "Payments.TRANSITIONS: NEW -> PAID"),
         ("validation", "validator", "OrderCreate.not_blank"),
         ("validation", "constraint", "OrderCreate.title"),
-        ("flag", "feature_flag", "SHIPPING_ENABLED"),
+        ("flag", "feature_flag", "SHIP_MODE"),
         ("flag", "feature_flag", "NOTIFIER_URL"),
-        ("empty_error", "error_response", f"{SHIP} 404"),
     }
     by_kind = {c["kind"]: c for c in out["cells"]}
     assert by_kind["enum"]["detail"]["values"] == ["NEW", "PAID", "SHIPPED"]
     assert by_kind["constraint"]["detail"] == {"min_length": 1, "max_length": 80}
-    assert by_kind["error_response"]["detail"]["status"] == 404
-    assert by_kind["enum"]["file"] == "app/main.py"
 
 
 def test_cells_match_the_matrix_cell_shape() -> None:

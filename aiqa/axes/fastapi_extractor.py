@@ -10,10 +10,10 @@ from typing import Any
 from . import Cell
 
 SKIP_DIRS = {"tests", "test", "venv", "env", "node_modules", "build", "dist"}
-MAX_BYTES = 1_000_000
 METHODS = {"get", "post", "put", "patch", "delete", "head", "options"}
 AUTH = re.compile(r"auth|permission|role|admin|scope|require|user", re.IGNORECASE)
 FLAG = re.compile(r"enable|disable|flag|feature|toggle", re.IGNORECASE)
+FIELDS = {"Field", "Query", "Path", "Body", "Header", "Cookie", "Form"}
 LIMITS = {"min_length", "max_length", "ge", "gt", "le", "lt", "pattern"}
 VALIDATORS = {"field_validator", "validator", "model_validator", "root_validator"}
 ENUMS = {"Enum", "StrEnum", "IntEnum", "Flag", "IntFlag"}
@@ -62,33 +62,43 @@ def _status(node: ast.AST | None) -> int | None:
 
 
 class _Scan(ast.NodeVisitor):
-    def __init__(self, rel: str) -> None:
+    def __init__(self, rel: str, tree: ast.AST) -> None:
         self.rel, self.cells = rel, list[Cell]()
-        self.owners, self.scopes = list[str](), list[str]()
+        self.owners, self.scopes = list[list[str]](), list[str]()
         self.prefixes, self.gates = dict[str, str](), set[int]()
+        nodes = list(ast.walk(tree))
+        mods = [a.name for n in nodes if isinstance(n, ast.Import) for a in n.names]
+        mods += [
+            n.module or ""
+            for n in nodes
+            if isinstance(n, ast.ImportFrom) and not n.level
+        ]
+        self.fastapi = any(m.split(".")[0] == "fastapi" for m in mods)
+        self.imported = {
+            a.asname or a.name
+            for n in nodes
+            if isinstance(n, ast.ImportFrom)
+            for a in n.names
+        }
+        self.mounts = {
+            c.args[0].id: _str(_kw(c, "prefix")) or ""
+            for c in nodes
+            if isinstance(c, ast.Call)
+            and _name(c) == "include_router"
+            and c.args
+            and isinstance(c.args[0], ast.Name)
+        }
 
     def add(self, node: ast.AST, kind: str, subject: str, **detail: Any) -> None:
         key = f"{self.rel}::{kind}:{subject}"
-        self.cells.append(
-            Cell(
-                key,
-                AXES[kind],
-                kind,
-                subject,
-                self.rel,
-                getattr(node, "lineno", 0),
-                detail,
-            )
-        )
+        line = getattr(node, "lineno", 0)
+        self.cells.append(Cell(key, AXES[kind], kind, subject, self.rel, line, detail))
 
-    def visit_Assign(self, node: ast.Assign) -> None:
-        names = [t.id for t in node.targets if isinstance(t, ast.Name)]
-        value = node.value
+    def _bind(self, names: list[str], value: ast.expr, node: ast.stmt) -> None:
         if isinstance(value, ast.Call) and _name(value) in {"APIRouter", "FastAPI"}:
             self.prefixes.update({n: _str(_kw(value, "prefix")) or "" for n in names})
-        if isinstance(value, ast.Dict) and any(
-            "transition" in n.lower() for n in names
-        ):
+        if isinstance(value, ast.Dict) and "transition" in "".join(names).lower():
+            table = ".".join([*self.scopes, names[0]])
             for key, ends in zip(value.keys, value.values):
                 many = (
                     ends.elts
@@ -99,7 +109,17 @@ class _Scan(ast.NodeVisitor):
                     continue
                 for end in many:
                     src, dst = (_name(x) or ast.unparse(x) for x in (key, end))
-                    self.add(node, "transition", f"{names[0]}: {src} -> {dst}")
+                    self.add(node, "transition", f"{table}: {src} -> {dst}")
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self._bind(
+            [t.id for t in node.targets if isinstance(t, ast.Name)], node.value, node
+        )
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if isinstance(node.target, ast.Name) and node.value:
+            self._bind([node.target.id], node.value, node)
         self.generic_visit(node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
@@ -107,32 +127,52 @@ class _Scan(ast.NodeVisitor):
             members = [
                 t.id
                 for s in node.body
-                if isinstance(s, ast.Assign)
-                for t in s.targets
+                for t in (
+                    s.targets
+                    if isinstance(s, ast.Assign)
+                    else [s.target]
+                    if isinstance(s, ast.AnnAssign) and s.value
+                    else []
+                )
                 if isinstance(t, ast.Name)
             ]
             self.add(node, "enum", node.name, values=members)
         for s in node.body:
             call = s.value if isinstance(s, ast.AnnAssign) else None
-            limits = (
-                {k.arg: _lit(k.value) for k in call.keywords if k.arg in LIMITS}
-                if isinstance(call, ast.Call)
-                else {}
-            )
-            if limits and isinstance(s, ast.AnnAssign):
-                self.add(
-                    s,
-                    "constraint",
-                    f"{node.name}.{ast.unparse(s.target)}",
-                    **limits,
-                )
-        self.scopes.append(node.name)
+            if (
+                isinstance(s, ast.AnnAssign)
+                and isinstance(call, ast.Call)
+                and _name(call) in FIELDS
+            ):
+                limits = {
+                    k.arg: v
+                    for k in call.keywords
+                    if k.arg in LIMITS
+                    and isinstance(v := _lit(k.value), int | float | str)
+                }
+                if limits:
+                    self.add(
+                        s,
+                        "constraint",
+                        f"{node.name}.{ast.unparse(s.target)}",
+                        **limits,
+                    )
+        self._scoped(node, node.name)
+
+    def _scoped(
+        self, node: ast.AST, name: str, owners: list[str] | None = None
+    ) -> None:
+        saved = dict(self.prefixes)
+        self.scopes.append(name)
+        self.owners += [owners] if owners else []
         self.generic_visit(node)
+        self.owners = self.owners[: len(self.owners) - bool(owners)]
         self.scopes.pop()
+        self.prefixes = saved
 
     def visit_FunctionDef(self, node: Func) -> None:
         qualified = ".".join([*self.scopes, node.name])
-        route = None
+        routes: list[str] = []
         for dec in node.decorator_list:
             if not isinstance(dec, ast.Call):
                 continue
@@ -142,39 +182,37 @@ class _Scan(ast.NodeVisitor):
                 isinstance(dec.func, ast.Attribute)
                 and dec.func.attr in METHODS
                 and dec.args
-                and (path := _str(dec.args[0])) is not None
             ):
-                prefix = self.prefixes.get(_name(dec.func.value), "")
-                route = f"{dec.func.attr.upper()} {prefix}{path}"
-                self.add(node, "route", route)
-        if route:
-            for call in (
-                c for p in [*node.decorator_list, node.args] for c in ast.walk(p)
-            ):
-                dep = (
-                    call.args[0]
-                    if isinstance(call, ast.Call)
-                    and _name(call) in {"Depends", "Security"}
-                    and call.args
-                    else None
-                )
-                if dep and AUTH.search(_name(dep)):
-                    roles = [s for a in getattr(dep, "args", []) if (s := _str(a))]
-                    for role in roles or [_name(dep)]:
-                        self.add(node, "role_check", f"{route} requires {role}")
-        self.owners.append(route or qualified)
-        self.scopes.append(node.name)
-        self.generic_visit(node)
-        self.scopes.pop()
-        self.owners.pop()
+                recv, path = _name(dec.func.value), _str(dec.args[0])
+                if path is not None and (
+                    recv in self.prefixes or recv in self.imported
+                ):
+                    prefix = self.mounts.get(recv, "") + self.prefixes.get(recv, "")
+                    routes.append(f"{dec.func.attr.upper()} {prefix}{path}")
+                    self.add(node, "route", routes[-1])
+        deps = [
+            c.args[0]
+            for p in [*node.decorator_list, node.args]
+            for c in ast.walk(p)
+            if isinstance(c, ast.Call)
+            and _name(c) in {"Depends", "Security"}
+            and c.args
+        ]
+        for route, dep in [
+            (r, d) for r in routes for d in deps if AUTH.search(_name(d))
+        ]:
+            roles = [s for a in getattr(dep, "args", []) if (s := _str(a))]
+            for role in roles or [_name(dep)]:
+                self.add(node, "role_check", f"{route} requires {role}")
+        self._scoped(node, node.name, routes or [qualified])
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
-    def visit_If(self, node: ast.If) -> None:
-        self.gates.add(
-            id(node.test.value if isinstance(node.test, ast.NamedExpr) else node.test)
-        )
+    def visit_If(self, node: ast.If | ast.IfExp) -> None:
+        self.gates.update(id(n) for n in ast.walk(node.test))
         self.generic_visit(node)
+
+    visit_IfExp = visit_If
 
     def visit_Raise(self, node: ast.Raise) -> None:
         exc = node.exc
@@ -182,17 +220,14 @@ class _Scan(ast.NodeVisitor):
             status = _status(
                 _kw(exc, "status_code") or (exc.args[0] if exc.args else None)
             )
-            owner = self.owners[-1] if self.owners else self.rel
-            self.add(node, "error_response", f"{owner} {status}", status=status)
+            for owner in self.owners[-1] if self.owners else [self.rel]:
+                self.add(node, "error_response", f"{owner} {status}", status=status)
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
         var = _str(node.args[0]) if node.args else None
-        if (
-            ast.unparse(node.func) in ENV
-            and var
-            and (FLAG.search(var) or id(node) in self.gates)
-        ):
+        env = ast.unparse(node.func) in ENV
+        if env and var and (FLAG.search(var) or id(node) in self.gates):
             self.add(node, "feature_flag", var)
         self.generic_visit(node)
 
@@ -204,27 +239,9 @@ def _sources(repo: Path) -> Iterator[Path]:
         )
         for name in sorted(names):
             path = Path(root, name)
-            if (
-                name.endswith(".py")
-                and not name.startswith("test_")
-                and name != "conftest.py"
-                and not path.is_symlink()
-            ):
+            skip = name.startswith(("test_", "conftest")) or path.is_symlink()
+            if name.endswith(".py") and not skip:
                 yield path
-
-
-def _imports_fastapi(tree: ast.AST) -> bool:
-    for node in ast.walk(tree):
-        mods = (
-            [a.name for a in node.names]
-            if isinstance(node, ast.Import)
-            else [node.module or ""]
-            if isinstance(node, ast.ImportFrom) and not node.level
-            else []
-        )
-        if any(m == "fastapi" or m.startswith("fastapi.") for m in mods):
-            return True
-    return False
 
 
 class FastApiExtractor:
@@ -236,18 +253,16 @@ class FastApiExtractor:
         found, cells = False, dict[str, Cell]()
         for path in _sources(repo):
             try:
-                if path.stat().st_size > MAX_BYTES:
-                    continue
                 tree = ast.parse(path.read_bytes())
             except (SyntaxError, ValueError, OSError, RecursionError):
                 continue
-            found = found or _imports_fastapi(tree)
-            scan = _Scan(path.relative_to(repo).as_posix())
-            scan.visit(tree)
+            scan = _Scan(path.relative_to(repo).as_posix(), tree)
+            found = found or scan.fastapi
+            try:
+                scan.visit(tree)
+            except RecursionError:  # a parseable but too deeply nested file
+                continue
             for cell in scan.cells:
                 cells.setdefault(cell.key, cell)
-        return (
-            sorted(cells.values(), key=lambda c: (c.file, c.line, c.key))
-            if found
-            else None
-        )
+        ordered = sorted(cells.values(), key=lambda c: (c.file, c.line, c.key))
+        return ordered if found else None

@@ -58,10 +58,10 @@ def extract_axes(
     for extractor in extractors:
         cells = extractor.extract(repo)
         if cells is not None:
+            found = {"axes": "observed", "extractor": extractor.name}
             return {
                 "apiVersion": API_VERSION,
-                "axes": "observed",
-                "extractor": extractor.name,
+                **found,
                 "cells": [c.as_dict() for c in cells],
             }
     return {

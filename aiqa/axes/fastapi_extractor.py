@@ -65,7 +65,7 @@ def _status(node: ast.AST | None) -> int | None:
 
 def _plain(value: Any) -> bool:
     if isinstance(value, int):  # beyond 64 bits is not representable downstream
-        return abs(value) < 2**63
+        return -(2**63) <= value < 2**63
     return isinstance(value, str) or (isinstance(value, float) and math.isfinite(value))
 
 

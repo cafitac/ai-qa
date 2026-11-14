@@ -521,8 +521,19 @@ def test_timeout_escalates_to_kill(context, tmp_path, monkeypatch):
     script = f"import signal,time,subprocess,pathlib; signal.signal(signal.SIGTERM,signal.SIG_IGN); p=subprocess.Popen([{sys.executable!r},'-c',{child!r}]); pathlib.Path({str(pid_file)!r}).write_text(str(p.pid)); time.sleep(60)"
 
     def launcher(command, **kwargs):
+        started = time.monotonic()
         process = subprocess.Popen([sys.executable, "-c", script], **kwargs)
         seen["process"] = process
+        # The virtual clock removes the 5 s grace in which the tree used to finish
+        # starting, so start the 0.5 s timeout only once the whole tree is up.
+        deadline = started + 10
+        while not (pid_file.exists() and heartbeat.exists()):
+            if time.monotonic() >= deadline:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+                pytest.fail("process tree did not start within 10 s")
+            time.sleep(0.01)
+        seen["startup"] = time.monotonic() - started
         return process
 
     output = ClaudeCodeRunner(
@@ -530,7 +541,7 @@ def test_timeout_escalates_to_kill(context, tmp_path, monkeypatch):
     ).run(SCENARIO, replace(context, timeout_seconds=0.5))
     assert output.timed_out and seen["process"].returncode == -signal.SIGKILL
     assert clock.now >= 5  # SIGKILL only after the full grace period
-    assert 0.5 <= output.seconds < 5
+    assert 0.5 <= output.seconds - seen["startup"] < 5
     assert pid_file.exists()
     stamp = heartbeat.read_text()
     time.sleep(0.1)

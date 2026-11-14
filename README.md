@@ -108,8 +108,9 @@ observed cells (`source: observed`, `platform: web`, a qa-design `axis`) for
 routes, role dependencies, enums and transition tables, pydantic validators and
 field limits, environment feature flags and `HTTPException` responses. Each cell
 has a stable `key`, `kind`, `subject`, `file`, `line` and optional `detail`. An unsupported stack
-prints `axes: unknown` and exits 0; a missing path exits 2. Routers included from
-another module do not add their prefix; dependencies are matched by name.
+prints `axes: unknown` and exits 0; a missing path exits 2. Only a router's own
+`prefix` is applied (`include_router` prefixes and router-level dependencies
+are not read); dependencies are matched by name.
 
 ## Reading a report
 

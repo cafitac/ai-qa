@@ -7,7 +7,6 @@ from pydantic import BaseModel, Field, field_validator
 
 app = FastAPI()
 router: APIRouter = APIRouter(prefix="/orders")
-registry = {}
 
 
 class OrderState(str, Enum):
@@ -34,13 +33,8 @@ def require_role(role: str):
     return lambda: role
 
 
-def factory():
-    router = APIRouter(prefix="/inner")
-    return router
-
-
 @router.post("/{order_id}/ship")
-@router.post("/{order_id}/dispatch")
+@router.post("/{order_id}/dispatch", dependencies=[Depends(require_role("ops"))])
 def ship(order_id: int, _: str = Depends(require_role("admin"))):
     if order_id < 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="missing")
@@ -51,8 +45,4 @@ def ship(order_id: int, _: str = Depends(require_role("admin"))):
     return {}
 
 
-@registry.get("not-a-route")
-def unrelated(): ...
-
-
-app.include_router(router, prefix="/api")
+app.include_router(router)

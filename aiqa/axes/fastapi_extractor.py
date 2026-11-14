@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import math
 import os
 import re
 from collections.abc import Iterator
@@ -13,6 +14,7 @@ SKIP_DIRS = {"tests", "test", "venv", "env", "node_modules", "build", "dist"}
 METHODS = {"get", "post", "put", "patch", "delete", "head", "options"}
 AUTH = re.compile(r"auth|permission|role|admin|scope|require|user", re.IGNORECASE)
 FLAG = re.compile(r"enable|disable|flag|feature|toggle", re.IGNORECASE)
+DEPENDS = {"Depends", "Security"}
 FIELDS = {"Field", "Query", "Path", "Body", "Header", "Cookie", "Form"}
 LIMITS = {"min_length", "max_length", "ge", "gt", "le", "lt", "pattern"}
 VALIDATORS = {"field_validator", "validator", "model_validator", "root_validator"}
@@ -57,8 +59,24 @@ def _kw(call: ast.Call, name: str) -> ast.expr | None:
 
 def _status(node: ast.AST | None) -> int | None:
     value = _lit(node)
-    found = re.search(r"HTTP_(\d{3})", ast.unparse(node)) if node else None
+    found = re.fullmatch(r"HTTP_(\d{3})_\w+", _name(node))
     return value if isinstance(value, int) else int(found[1]) if found else None
+
+
+def _plain(value: Any) -> bool:
+    return isinstance(value, str) or (
+        isinstance(value, int | float) and math.isfinite(value)
+    )
+
+
+def _deps(*parts: ast.AST) -> list[ast.expr]:
+    calls = [c for p in parts for c in ast.walk(p) if isinstance(c, ast.Call)]
+    found = [
+        c.args[0] if c.args else _kw(c, "dependency")
+        for c in calls
+        if _name(c) in DEPENDS
+    ]
+    return [d for d in found if d is not None]
 
 
 class _Scan(ast.NodeVisitor):
@@ -75,18 +93,10 @@ class _Scan(ast.NodeVisitor):
         ]
         self.fastapi = any(m.split(".")[0] == "fastapi" for m in mods)
         self.imported = {
-            a.asname or a.name
+            a.asname or a.name: a.name
             for n in nodes
             if isinstance(n, ast.ImportFrom)
             for a in n.names
-        }
-        self.mounts = {
-            c.args[0].id: _str(_kw(c, "prefix")) or ""
-            for c in nodes
-            if isinstance(c, ast.Call)
-            and _name(c) == "include_router"
-            and c.args
-            and isinstance(c.args[0], ast.Name)
         }
 
     def add(self, node: ast.AST, kind: str, subject: str, **detail: Any) -> None:
@@ -95,7 +105,8 @@ class _Scan(ast.NodeVisitor):
         self.cells.append(Cell(key, AXES[kind], kind, subject, self.rel, line, detail))
 
     def _bind(self, names: list[str], value: ast.expr, node: ast.stmt) -> None:
-        if isinstance(value, ast.Call) and _name(value) in {"APIRouter", "FastAPI"}:
+        ctor = self.imported.get(_name(value), _name(value))
+        if isinstance(value, ast.Call) and ctor in {"APIRouter", "FastAPI"}:
             self.prefixes.update({n: _str(_kw(value, "prefix")) or "" for n in names})
         if isinstance(value, ast.Dict) and "transition" in "".join(names).lower():
             table = ".".join([*self.scopes, names[0]])
@@ -123,6 +134,7 @@ class _Scan(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        cls = ".".join([*self.scopes, node.name])
         if any(_name(b) in ENUMS for b in node.bases):
             members = [
                 t.id
@@ -134,9 +146,9 @@ class _Scan(ast.NodeVisitor):
                     if isinstance(s, ast.AnnAssign) and s.value
                     else []
                 )
-                if isinstance(t, ast.Name)
+                if isinstance(t, ast.Name) and not t.id.startswith("_")
             ]
-            self.add(node, "enum", node.name, values=members)
+            self.add(node, "enum", cls, values=members)
         for s in node.body:
             call = s.value if isinstance(s, ast.AnnAssign) else None
             if (
@@ -147,15 +159,11 @@ class _Scan(ast.NodeVisitor):
                 limits = {
                     k.arg: v
                     for k in call.keywords
-                    if k.arg in LIMITS
-                    and isinstance(v := _lit(k.value), int | float | str)
+                    if k.arg in LIMITS and _plain(v := _lit(k.value))
                 }
                 if limits:
                     self.add(
-                        s,
-                        "constraint",
-                        f"{node.name}.{ast.unparse(s.target)}",
-                        **limits,
+                        s, "constraint", f"{cls}.{ast.unparse(s.target)}", **limits
                     )
         self._scoped(node, node.name)
 
@@ -172,39 +180,29 @@ class _Scan(ast.NodeVisitor):
 
     def visit_FunctionDef(self, node: Func) -> None:
         qualified = ".".join([*self.scopes, node.name])
-        routes: list[str] = []
+        routes: list[tuple[str, ast.Call]] = []
         for dec in node.decorator_list:
             if not isinstance(dec, ast.Call):
                 continue
             if _name(dec) in VALIDATORS:
                 self.add(node, "validator", qualified)
-            elif (
-                isinstance(dec.func, ast.Attribute)
-                and dec.func.attr in METHODS
-                and dec.args
-            ):
-                recv, path = _name(dec.func.value), _str(dec.args[0])
+            elif isinstance(dec.func, ast.Attribute) and dec.func.attr in METHODS:
+                recv = _name(dec.func.value)
+                path = _str(dec.args[0] if dec.args else _kw(dec, "path"))
                 if path is not None and (
                     recv in self.prefixes or recv in self.imported
                 ):
-                    prefix = self.mounts.get(recv, "") + self.prefixes.get(recv, "")
-                    routes.append(f"{dec.func.attr.upper()} {prefix}{path}")
-                    self.add(node, "route", routes[-1])
-        deps = [
-            c.args[0]
-            for p in [*node.decorator_list, node.args]
-            for c in ast.walk(p)
-            if isinstance(c, ast.Call)
-            and _name(c) in {"Depends", "Security"}
-            and c.args
-        ]
-        for route, dep in [
-            (r, d) for r in routes for d in deps if AUTH.search(_name(d))
-        ]:
-            roles = [s for a in getattr(dep, "args", []) if (s := _str(a))]
-            for role in roles or [_name(dep)]:
-                self.add(node, "role_check", f"{route} requires {role}")
-        self._scoped(node, node.name, routes or [qualified])
+                    route = (
+                        f"{dec.func.attr.upper()} {self.prefixes.get(recv, '')}{path}"
+                    )
+                    routes.append((route, dec))
+                    self.add(node, "route", route)
+        for route, dec in routes:
+            for dep in [d for d in _deps(dec, node.args) if AUTH.search(_name(d))]:
+                roles = [s for a in getattr(dep, "args", []) if (s := _str(a))]
+                for role in roles or [_name(dep)]:
+                    self.add(node, "role_check", f"{route} requires {role}")
+        self._scoped(node, node.name, [r for r, _ in routes] or [qualified])
 
     visit_AsyncFunctionDef = visit_FunctionDef
 

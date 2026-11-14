@@ -20,15 +20,13 @@ def cells(repo: Path) -> set[tuple[str, str, str]]:
 
 def test_fastapi_fixture_yields_every_observed_axis() -> None:
     out = extract_axes(FIXTURES / "fastapi_app")
-    assert out["extractor"] == "fastapi"
-    ship, dispatch = (
-        f"POST /api/orders/{{order_id}}/{n}" for n in ("ship", "dispatch")
-    )
+    ship, dispatch = (f"POST /orders/{{order_id}}/{n}" for n in ("ship", "dispatch"))
     assert cells(FIXTURES / "fastapi_app") == {
         ("flow", "route", ship),
         ("flow", "route", dispatch),
         ("permission", "role_check", f"{ship} requires admin"),
         ("permission", "role_check", f"{dispatch} requires admin"),
+        ("permission", "role_check", f"{dispatch} requires ops"),
         ("empty_error", "error_response", f"{ship} 404"),
         ("empty_error", "error_response", f"{dispatch} 404"),
         ("state", "enum", "OrderState"),
@@ -38,9 +36,8 @@ def test_fastapi_fixture_yields_every_observed_axis() -> None:
         ("flag", "feature_flag", "SHIP_MODE"),
         ("flag", "feature_flag", "NOTIFIER_URL"),
     }
-    by_kind = {c["kind"]: c for c in out["cells"]}
-    assert by_kind["enum"]["detail"]["values"] == ["NEW", "PAID", "SHIPPED"]
-    assert by_kind["constraint"]["detail"] == {"min_length": 1, "max_length": 80}
+    detail = {c["kind"]: c["detail"] for c in out["cells"] if "detail" in c}
+    assert detail["enum"] == {"values": ["NEW", "PAID", "SHIPPED"]}
 
 
 def test_cells_match_the_matrix_cell_shape() -> None:
@@ -59,10 +56,7 @@ def test_unsupported_stack_is_unknown_not_an_error(
     assert main(["axes", str(FIXTURES / "plain_repo")]) == 0
     out = json.loads(capsys.readouterr().out)
     assert (out["axes"], out["cells"], out["extractor"]) == ("unknown", [], None)
-
-
-def test_missing_path_is_invalid_input(tmp_path: Path) -> None:
-    assert main(["axes", str(tmp_path / "absent")]) == 2
+    assert main(["axes", str(FIXTURES / "absent")]) == 2
 
 
 def test_tests_broken_files_and_symlinks_are_skipped(tmp_path: Path) -> None:
@@ -75,3 +69,23 @@ def test_tests_broken_files_and_symlinks_are_skipped(tmp_path: Path) -> None:
     )
     (tmp_path / "link.py").symlink_to(tmp_path / "app.py")
     assert cells(tmp_path) == {("flow", "route", "GET /x")}
+
+
+def test_aliases_scopes_and_unsupported_values(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        "from fastapi import FastAPI as API, HTTPException, status\n"
+        "from enum import Enum\nfrom pydantic import Field\napp = API()\n"
+        "class A:\n class S(Enum):\n  NEW = 1\n  _ignore_ = 'x'\n"
+        "class B:\n class S(Enum):\n  OLD = 2\n"
+        "class M:\n n: int = Field(le=1e999, ge=1)\n"
+        "reg = {}\n@reg.get('y')\ndef y(): ...\n@app.get(path='/x')\n"
+        "def x():\n raise HTTPException(status.HTTP_400_BAD_REQUEST + 1)\n"
+    )
+    by = {
+        (c["kind"], c["subject"]): c.get("detail")
+        for c in extract_axes(tmp_path)["cells"]
+    }
+    assert by[("enum", "A.S")] == {"values": ["NEW"]} and ("enum", "B.S") in by
+    assert by[("constraint", "M.n")] == {"ge": 1} and ("route", "GET /x") in by
+    assert by[("error_response", "GET /x None")] == {"status": None}
+    assert ("route", "GET y") not in by

@@ -130,20 +130,8 @@ ReadinessProbe = Callable[[str], tuple[str, ...]]
 
 
 def unready_parts(descriptor: EnvironmentDescriptor, at: datetime) -> tuple[str, ...]:
-    """Pure readiness evidence; `is_ready` stays the single owner of the rule."""
-    data = descriptor.data
-    down = tuple(s["name"] for s in data["services"] if s["health"] != "HEALTHY")
-    if down or descriptor.is_ready(at):
-        return down
-    if datetime.fromisoformat(data["expiresAt"]) <= at:
-        return ("expired",)
-    if data["state"] != "READY":
-        return (f"state={data['state']}",)
-    return (
-        ("readiness",)
-        if data["readiness"]["allHealthy"] is not True
-        else ("no-services",)
-    )
+    """Pure readiness evidence; the descriptor owns the rule."""
+    return descriptor.unready_reasons(at)
 
 
 def blocked(

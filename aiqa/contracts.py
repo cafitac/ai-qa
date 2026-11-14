@@ -169,6 +169,47 @@ def parse_scenarios(
     return result
 
 
+@dataclass(frozen=True)
+class ScenarioLinks:
+    """v2 linkage of one scenario (key is service/id). Kept off `Scenario`, whose
+    fields are serialized into the agent prompt."""
+
+    key: str
+    cells: tuple[str, ...] = ()
+    kind: str = "happy"
+    ac: tuple[str, ...] = ()
+    origin: str | None = None
+    data: str | None = None
+
+
+def scenario_links(value: object, service: str) -> list[ScenarioLinks]:
+    parse_scenarios(value, service)  # schema, id and duplicate checks
+    items: list[dict[str, Any]] = validate("scenario-file", value)["scenarios"]
+    return [
+        ScenarioLinks(
+            f"{service}/{i['id']}",
+            tuple(i.get("cells", ())),
+            i.get("kind", "happy"),
+            tuple(i.get("ac", ())),
+            i.get("origin"),
+            i.get("data"),
+        )
+        for i in items
+    ]
+
+
+def manifest_links(value: object) -> list[ScenarioLinks]:
+    items: list[dict[str, Any]] = validate("scenario-manifest", value)["scenarios"]
+    if len({i["id"] for i in items}) != len(items):
+        raise InvalidInput("Duplicate manifest scenario")
+    return [
+        ScenarioLinks(
+            i["id"], tuple(i["cells"]), i["kind"], tuple(i["ac"]), i["origin"]
+        )
+        for i in items
+    ]
+
+
 def environment_path(env: Mapping[str, str], name: str) -> str | None:
     value = env.get(name)
     return value if value and value.strip() else None
@@ -283,14 +324,22 @@ class EnvironmentDescriptor:
             raise InvalidInput("Duplicate descriptor service")
         return cls(d)
 
+    def unready_reasons(self, at: datetime | None = None) -> tuple[str, ...]:
+        """The readiness rule: why the environment is not ready (empty when ready)."""
+        d = self.data
+        down = tuple(s["name"] for s in d["services"] if s["health"] != "HEALTHY")
+        if down:
+            return down
+        if datetime.fromisoformat(d["expiresAt"]) <= (at or default_clock()):
+            return ("expired",)
+        if d["state"] != "READY":
+            return (f"state={d['state']}",)
+        if d["readiness"]["allHealthy"] is not True:
+            return ("readiness",)
+        return () if d["services"] else ("no-services",)
+
     def is_ready(self, at: datetime | None = None) -> bool:
-        return (
-            datetime.fromisoformat(self.data["expiresAt"]) > (at or default_clock())
-            and self.data["state"] == "READY"
-            and self.data["readiness"]["allHealthy"] is True
-            and bool(self.data["services"])
-            and all(s["health"] == "HEALTHY" for s in self.data["services"])
-        )
+        return not self.unready_reasons(at)
 
     def commits(self) -> dict[str, str]:
         return {s["name"]: s["commit"] for s in self.data["services"]}

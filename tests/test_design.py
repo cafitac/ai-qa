@@ -4,8 +4,15 @@ import json
 import pytest
 
 from aiqa.cli import main as cli_main
-from aiqa.contracts import validate
-from aiqa.design import check
+from aiqa.contracts import (
+    InvalidInput,
+    ScenarioLinks,
+    manifest_links,
+    parse_scenarios,
+    scenario_links,
+    validate,
+)
+from aiqa.design import check, check_linkage
 
 SPEC = {
     "apiVersion": "ai-qa/spec/v1",
@@ -156,9 +163,202 @@ def test_cli_pass_and_gaps(tmp_path, capsys):
     assert capsys.readouterr().out.startswith("G1_AC_NOT_COVERED AC2:")
 
 
-def test_cli_refuses_scenarios(tmp_path, capsys):
-    assert run(tmp_path, SPEC, DESIGN, "--scenarios", str(tmp_path)) == 2
-    assert "ai-qa/v2" in capsys.readouterr().out
+def link(key, cells, kind="happy"):
+    return ScenarioLinks(key, tuple(cells), kind)
+
+
+BOTH = [link("web/a", ["C-1"]), link("web/b", ["C-2"])]
+
+
+def budget(tier, **limits):
+    return lambda d: d["budget"][tier].update(limits)
+
+
+def waive_c2(d):
+    d["waivers"].append(W2)
+
+
+def waive_c1(d):
+    d["waivers"].append({**W2, "cell": "C-1"})
+
+
+# Each row: (design mutation, scenarios) -> exact set of (code, subject) gaps.
+LINKAGE = {
+    "valid": (lambda d: None, BOTH, set()),
+    "g4_untested": (
+        lambda d: None,
+        BOTH[:1],
+        {("G4_CELL_UNTESTED", "C-2"), ("G6_BUDGET_SHORT", "R3")},
+    ),
+    "g4_waived": (waive_c2, BOTH[:1], set()),
+    "g4_hold_cell_exempt": (
+        lambda d: d["matrix"][1].update(scope="hold"),
+        BOTH[:1],
+        set(),
+    ),
+    "g4_dangling_scenario_cell": (
+        lambda d: None,
+        [link("web/a", ["C-1", "C-9"]), link("web/b", ["C-2"])],
+        set(),
+    ),
+    "g6_min": (budget("R1", min=2), BOTH, {("G6_BUDGET_SHORT", "R1")}),
+    "g6_min_waived": (
+        lambda d: (budget("R1", min=2)(d), waive_c1(d)),
+        BOTH,
+        set(),
+    ),
+    "g6_negative": (budget("R1", minNegative=1), BOTH, {("G6_BUDGET_SHORT", "R1")}),
+    "g6_negative_met": (
+        budget("R1", minNegative=1),
+        [link("web/a", ["C-1"], "negative"), BOTH[1]],
+        set(),
+    ),
+    "g6_boundary": (budget("R3", minBoundary=1), BOTH, {("G6_BUDGET_SHORT", "R3")}),
+    "g6_share": (
+        budget("R1", nonHappyShare=0.5),
+        [*BOTH, link("web/c", ["C-1"], "negative"), link("web/d", ["C-1"])],
+        {("G6_BUDGET_SHORT", "R1")},
+    ),
+    "g6_share_met": (
+        budget("R1", nonHappyShare=0.5),
+        [BOTH[0], link("web/c", ["C-1"], "boundary"), BOTH[1]],
+        set(),
+    ),
+    "g6_tier_without_cells": (budget("R2", min=9), BOTH, set()),
+}
+
+
+@pytest.mark.parametrize("name", LINKAGE)
+def test_linkage_table(name):
+    mutate, scenarios, expected = LINKAGE[name]
+    design = copy.deepcopy(DESIGN)
+    design["budget"] = {r: dict(b) for r, b in design["budget"].items()}
+    mutate(design)
+    validate("qa-design", design)
+    got = check_linkage(design, scenarios)
+    assert {(g.code, g.subject) for g in got} == expected
+
+
+def v2(**item):
+    return {
+        "apiVersion": "ai-qa/v2",
+        "scenarios": [
+            {"id": "one-a", "title": "T", "steps": ["s"], "expect": ["e"], **item}
+        ],
+    }
+
+
+FULL_V2 = {
+    "ac": ["AC1"],
+    "cells": ["C-1"],
+    "kind": "negative",
+    "origin": "golden",
+    "data": "shard-a",
+}
+
+
+def test_v1_and_v2_load():
+    v1 = {**v2(), "apiVersion": "ai-qa/v1"}
+    assert [s.id for s in parse_scenarios(v1, "web")] == ["one-a"]
+    assert [s.id for s in parse_scenarios(v2(**FULL_V2), "web")] == ["one-a"]
+    assert scenario_links(v2(**FULL_V2), "web") == [
+        ScenarioLinks("web/one-a", ("C-1",), "negative", ("AC1",), "golden", "shard-a")
+    ]
+    assert scenario_links(v1, "web") == [ScenarioLinks("web/one-a")]
+
+
+@pytest.mark.parametrize(
+    "doc",
+    [
+        v2(owner="x"),
+        v2(kind="sad"),
+        v2(cells=["C-1\n"]),
+        v2(cells=[]),
+        v2(ac=["AC1", "AC1"]),
+        v2(data="Bad Name"),
+        {**v2(ac=["AC1"]), "apiVersion": "ai-qa/v1"},
+        {**v2(), "apiVersion": "ai-qa/v3"},
+    ],
+)
+def test_v2_unknown_or_misplaced_fields_refused(doc):
+    with pytest.raises(InvalidInput):
+        parse_scenarios(doc, "web")
+
+
+MANIFEST = {
+    "apiVersion": "ai-qa/manifest/v1",
+    "generationId": 1,
+    "generatorVersion": 2,
+    "rulesetVersion": 3,
+    "model": "m",
+    "scenarios": [
+        {
+            "id": "web/one-a",
+            "ac": ["AC1"],
+            "cells": ["C-1"],
+            "kind": "happy",
+            "origin": "skeleton",
+        },
+        {
+            "id": "web/one-b",
+            "ac": ["AC2"],
+            "cells": ["C-2"],
+            "kind": "negative",
+            "origin": "generated",
+        },
+    ],
+}
+
+
+def test_manifest_loads_and_refuses_unknown():
+    assert [s.key for s in manifest_links(MANIFEST)] == ["web/one-a", "web/one-b"]
+    for bad in (
+        {**MANIFEST, "extra": 1},
+        {**MANIFEST, "scenarios": [{**MANIFEST["scenarios"][0], "x": 1}]},
+        {**MANIFEST, "scenarios": [MANIFEST["scenarios"][0]] * 2},
+    ):
+        with pytest.raises(InvalidInput):
+            manifest_links(bad)
+
+
+def scenario_dir(tmp_path, *docs):
+    d = tmp_path / "scenarios"
+    d.mkdir()
+    for name, doc in docs:
+        (d / f"{name}.yaml").write_text(json.dumps(doc))
+    return d
+
+
+def two_cell_files(tmp_path):
+    a = {**v2(cells=["C-1"]), "scenarios": [{**v2(cells=["C-1"])["scenarios"][0]}]}
+    b = v2(cells=["C-2"])
+    return scenario_dir(tmp_path, ("web", a), ("api", b))
+
+
+def test_cli_scenarios_dir_and_manifest(tmp_path, capsys):
+    assert (
+        run(tmp_path, SPEC, DESIGN, "--scenarios", str(two_cell_files(tmp_path))) == 0
+    )
+    assert json.loads(capsys.readouterr().out) == {"ok": True, "gaps": []}
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps(MANIFEST))
+    assert run(tmp_path, SPEC, DESIGN, "--scenarios", str(manifest)) == 0
+    capsys.readouterr()
+    partial = {**MANIFEST, "scenarios": MANIFEST["scenarios"][:1]}
+    manifest.write_text(json.dumps(partial))
+    assert run(tmp_path, SPEC, DESIGN, "--scenarios", str(manifest)) == 1
+    codes = {g["code"] for g in json.loads(capsys.readouterr().out)["gaps"]}
+    assert codes == {"G4_CELL_UNTESTED", "G6_BUDGET_SHORT"}
+
+
+def test_cli_scenarios_invalid_exits_2(tmp_path, capsys):
+    broken = scenario_dir(tmp_path, ("web", v2(owner="x")))
+    assert run(tmp_path, SPEC, DESIGN, "--scenarios", str(broken)) == 2
+    assert "schema" in capsys.readouterr().out
+    missing = str(tmp_path / "nope.json")
+    assert run(tmp_path, SPEC, DESIGN, "--scenarios", missing) == 2
+    (tmp_path / "bad.json").write_text("{not json")
+    assert run(tmp_path, SPEC, DESIGN, "--scenarios", str(tmp_path / "bad.json")) == 2
 
 
 INVALID = {

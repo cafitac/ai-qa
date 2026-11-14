@@ -7,6 +7,7 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
+from . import mutants
 from .browser import BrowserFailure
 from .clock import default_clock
 from .contracts import Config, InvalidInput
@@ -59,8 +60,11 @@ def main(
     gate.add_argument("--format", choices=["json", "text"], default="json")
     axes = commands.add_parser("axes")
     axes.add_argument("repo", type=Path)
+    mutants.add_arguments(commands)
     args = parser.parse_args(argv)
     try:
+        if args.command == "mutant":
+            return mutants.run(args, clock)
         if args.command == "axes":
             from .axes import extract_axes
 

@@ -95,8 +95,8 @@ def check_linkage(design: Doc, scenarios: list[ScenarioLinks]) -> list[Gap]:
     tiers: list[str] = sorted(design["budget"])
     for tier in tiers:
         limits = design["budget"][tier]
-        cells = {c["id"] for c in live if c["risk"] == tier}
-        if not cells or cells & waived:  # a waived cell accepts the tier's shortfall
+        cells = {c["id"] for c in live if c["risk"] == tier} - waived
+        if not cells:  # a waiver exempts only its own cell, never the tier
             continue
         mine = [s for s in scenarios if cells & set(s.cells)]
         neg = sum(s.kind == "negative" for s in mine)

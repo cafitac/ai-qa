@@ -216,6 +216,15 @@ LINKAGE = {
         [*BOTH, link("web/c", ["C-3"], "negative")],
         {("G6_BUDGET_SHORT", "R1")},
     ),
+    "g6_waiver_exempts_only_its_cell": (
+        lambda d: (
+            budget("R1", minNegative=1)(d),
+            d["matrix"].append(cell(3, "REQ-1", "normative", "in", "R1", "x")),
+            waive_c1(d),
+        ),
+        [link("web/a", ["C-1"], "negative"), BOTH[1], link("web/c", ["C-3"])],
+        {("G6_BUDGET_SHORT", "R1")},
+    ),
     "g6_negative": (budget("R1", minNegative=1), BOTH, {("G6_BUDGET_SHORT", "R1")}),
     "g6_negative_met": (
         budget("R1", minNegative=1),

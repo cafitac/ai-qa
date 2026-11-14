@@ -91,7 +91,8 @@ With `--scenarios` (a directory of `<service>.yaml` scenario files, or a
 and no cell waiver covers) and `G6_BUDGET_SHORT` (a risk tier with covering
 cells whose scenarios miss the design `budget`: `min`, `minNegative`,
 `minBoundary`, `nonHappyShare`; a scenario counts toward each tier its cells
-belong to, `kind` defaults to `happy`; a tier with a waived cell is exempt).
+belong to, `kind` defaults to `happy`; waived cells are left out of the tier,
+and a tier with no unwaived cell is skipped).
 
 Scenario files may use `apiVersion: ai-qa/v2`, which adds the optional `ac`,
 `cells`, `kind` (`happy|negative|boundary`), `origin`

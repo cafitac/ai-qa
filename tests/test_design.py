@@ -207,6 +207,15 @@ LINKAGE = {
         BOTH,
         set(),
     ),
+    "g6_excluded_cell_scenario_not_counted": (
+        lambda d: (
+            budget("R1", minNegative=1)(d),
+            d["requirements"][2].update(risk="R1"),
+            d["matrix"].append(cell(3, "REQ-3", "normative", "excluded", "R1", "x")),
+        ),
+        [*BOTH, link("web/c", ["C-3"], "negative")],
+        {("G6_BUDGET_SHORT", "R1")},
+    ),
     "g6_negative": (budget("R1", minNegative=1), BOTH, {("G6_BUDGET_SHORT", "R1")}),
     "g6_negative_met": (
         budget("R1", minNegative=1),
@@ -261,6 +270,10 @@ def test_v1_and_v2_load():
     v1 = {**v2(), "apiVersion": "ai-qa/v1"}
     assert [s.id for s in parse_scenarios(v1, "web")] == ["one-a"]
     assert [s.id for s in parse_scenarios(v2(**FULL_V2), "web")] == ["one-a"]
+    long = v2(timeout="600s")  # the run cap is the runner's, not design check's
+    assert len(scenario_links(long, "web")) == 1
+    with pytest.raises(InvalidInput):
+        parse_scenarios(long, "web")
     assert scenario_links(v2(**FULL_V2), "web") == [
         ScenarioLinks("web/one-a", ("C-1",), "negative", ("AC1",), "golden", "shard-a")
     ]

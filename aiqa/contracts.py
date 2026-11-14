@@ -183,7 +183,8 @@ class ScenarioLinks:
 
 
 def scenario_links(value: object, service: str) -> list[ScenarioLinks]:
-    parse_scenarios(value, service)  # schema, id and duplicate checks
+    # Schema, id and duplicate checks; the run timeout cap is the runner's concern.
+    parse_scenarios(value, service, timeout_cap=3650 * 86400)
     items: list[dict[str, Any]] = validate("scenario-file", value)["scenarios"]
     return [
         ScenarioLinks(

@@ -92,14 +92,13 @@ def check_linkage(design: Doc, scenarios: list[ScenarioLinks]) -> list[Gap]:
     for c in live:
         if c["id"] not in covered and c["id"] not in waived:
             gaps.append(Gap("G4_CELL_UNTESTED", c["id"], "no scenario and no waiver"))
-    risk_of = {c["id"]: c["risk"] for c in design["matrix"]}
     tiers: list[str] = sorted(design["budget"])
     for tier in tiers:
         limits = design["budget"][tier]
         cells = {c["id"] for c in live if c["risk"] == tier}
         if not cells or cells & waived:  # a waived cell accepts the tier's shortfall
             continue
-        mine = [s for s in scenarios if tier in {risk_of.get(i) for i in s.cells}]
+        mine = [s for s in scenarios if cells & set(s.cells)]
         neg = sum(s.kind == "negative" for s in mine)
         bnd = sum(s.kind == "boundary" for s in mine)
         short = [

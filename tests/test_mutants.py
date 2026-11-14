@@ -13,6 +13,7 @@ from aiqa import mutants
 from aiqa.browser import PlaywrightSession, ServiceTokenPreflight
 from aiqa.cli import main as cli_main
 from aiqa.contracts import Config, EnvironmentDescriptor, InvalidInput, validate
+from aiqa.usecases import Refused
 
 NOW = datetime(2040, 1, 15, tzinfo=UTC)
 LONG = "aqp-truncate-" + "y" * 40
@@ -209,6 +210,11 @@ def test_malformed_catalog_or_mutant_argument_is_refused(tmp_path, monkeypatch):
     duplicate = {**CATALOG, "mutants": [ORDER, {**TRUNCATE, "ref": "m-order"}]}
     assert run_cli(tmp_path, monkeypatch, {}, catalog=duplicate) == 2
     assert run_cli(tmp_path, monkeypatch, {}, names=("nope",)) == 2
+    binary = {
+        **CATALOG,
+        "mutants": [mutant("m-bin", "r", {**post("x"), "json": b"\xff"})],
+    }
+    assert run_cli(tmp_path, monkeypatch, {}, catalog=binary, names=()) == 2
     with pytest.raises(InvalidInput):
         validate("mutant-catalog", {**CATALOG, "mutants": [{**ORDER, "split": "LIVE"}]})
 
@@ -227,7 +233,9 @@ def test_transport_preflights_before_the_request_runtime_and_never_follows_redir
                 if url.endswith("/big")
                 else b'{"ok": true}'
             )
-            return SimpleNamespace(status=status, body=lambda: body)
+            return SimpleNamespace(
+                status=status, body=lambda: body, dispose=lambda: None
+            )
 
     class Factory:
         def __enter__(self):
@@ -246,7 +254,7 @@ def test_transport_preflights_before_the_request_runtime_and_never_follows_redir
 
     monkeypatch.setattr(PlaywrightSession, "preflight", preflight)
     origins = {"https://phub-a.cafitac.com", "https://phub-b.cafitac.com"}
-    with mutants.playwright_http(Config(), origins, Factory) as http:
+    with mutants.playwright_http(Config(), origins, {}, Factory) as http:
         assert http("POST", "https://phub-a.cafitac.com/api/notes", {"text": "x"}) == (
             201,
             {"ok": True},
@@ -279,17 +287,43 @@ def test_service_token_mode_loads_only_the_access_credentials(monkeypatch, tmp_p
     factory = lambda: nullcontext(
         SimpleNamespace(request=SimpleNamespace(new_context=lambda storage_state: 1))
     )
-    with mutants.playwright_http(config, {"https://phub-a.cafitac.com"}, factory):
+    with mutants.playwright_http(config, {"https://phub-a.cafitac.com"}, {}, factory):
         pass
     assert [s.service for s in seen] == [("i" * 24, "s" * 24)]
 
 
 def test_no_answer_statuses_are_pinned_and_odd_array_indexes_are_missing():
     assert mutants.NO_ANSWER == {0, 301, 302, 303, 307, 308, 401, 403, 404, 405}.union(
-        {502, 503, 504}
+        {502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 530}
     )
     assert mutants.dig([1], "\u00b2") is mutants.MISSING
+    assert mutants.dig([1], "9" * 5000) is mutants.MISSING
     assert mutants.dig([{"a": 1}], "0.a") == 1
+
+
+def test_cloudflare_origin_failure_is_no_answer_not_a_live_defect():
+    class Origin522(App):
+        def __call__(self, method, path, body):
+            return (
+                (522, None)
+                if self.defect == "522"
+                else super().__call__(method, path, body)
+            )
+
+    result = check(ORDER, defect="order", baseline=None)
+    assert result["validated"]
+    apps = {"base.test": App(), "mut.test": Origin522("522")}
+    result = mutants.validate_mutant(
+        ORDER,
+        env("base", "main", "base.test"),
+        env("mut", "m-order", "mut.test"),
+        "main",
+        http_for(apps),
+        NOW,
+    )
+    assert result["reasons"][0].startswith(
+        "mutant is not reachable: step 1 POST /api/notes: no answer from the app (HTTP 522)"
+    )
 
 
 def test_an_expected_no_answer_status_is_never_a_live_defect():
@@ -316,16 +350,20 @@ def test_json_equality_keeps_booleans_apart_from_numbers():
 def test_transport_serializes_json_bodies_and_reports_an_unreachable_origin(
     monkeypatch,
 ):
-    sent = []
+    sent, disposed, failures = [], [], {}
 
     class Context:
         def fetch(self, url, **kwargs):
             sent.append(kwargs)
-            return SimpleNamespace(status=200, body=lambda: b"1")
+            return SimpleNamespace(
+                status=200, body=lambda: b"1", dispose=lambda: disposed.append(url)
+            )
 
     def preflight(self, url):
         if "phub-b" in url:
             raise PlaywrightError("net::ERR_NAME_NOT_RESOLVED")
+        if "phub-c" in url:
+            raise Refused("login_required", "Service-token Access exchange refused")
         return Path("s.json")
 
     factory = lambda: nullcontext(
@@ -334,11 +372,21 @@ def test_transport_serializes_json_bodies_and_reports_an_unreachable_origin(
         )
     )
     monkeypatch.setattr(PlaywrightSession, "preflight", preflight)
-    origins = {"https://phub-a.cafitac.com", "https://phub-b.cafitac.com"}
-    with mutants.playwright_http(Config(), origins, factory) as http:
+    origins = {f"https://phub-{x}.cafitac.com" for x in "abc"}
+    with mutants.playwright_http(Config(), origins, failures, factory) as http:
         for body in ("first", None, mutants.MISSING):
             assert http("POST", "https://phub-a.cafitac.com/x", body) == (200, 1)
         assert http("GET", "https://phub-b.cafitac.com/x", None) == (0, None)
+        assert http("GET", "https://phub-c.cafitac.com/x", None) == (0, None)
+    assert sorted(failures) == [
+        "https://phub-b.cafitac.com",
+        "https://phub-c.cafitac.com",
+    ]
+    assert (
+        failures["https://phub-c.cafitac.com"]
+        == "Service-token Access exchange refused"
+    )
+    assert len(disposed) == 3
     assert [k.get("data") for k in sent] == ['"first"', "null", None]
     assert (
         sent[0]["headers"] == {"Content-Type": "application/json"}

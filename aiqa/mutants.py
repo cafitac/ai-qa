@@ -29,21 +29,48 @@ from .contracts import (
     validate,
 )
 from .secrets import RunSecrets
+from .usecases import Refused
 
 Http = Callable[[str, str, object], tuple[int, object]]
 # No answer from the app itself: transport error, Access redirect or denial, gateway, missing route. A status in this set is
 # never evidence of a defect, so a seeded defect that only changes a response to 401/403/404/405 cannot be validated by this check.
-NO_ANSWER = {0, 301, 302, 303, 307, 308, 401, 403, 404, 405, 502, 503, 504}
+NO_ANSWER = {
+    0,
+    301,
+    302,
+    303,
+    307,
+    308,
+    401,
+    403,
+    404,
+    405,
+    502,
+    503,
+    504,
+    520,
+    521,
+    522,
+    523,
+    524,
+    525,
+    526,
+    530,
+}  # 52x: Cloudflare's origin-unreachable family
 MISSING = object()
 MAX_BODY = 1 << 20
 
 
 @contextmanager
 def playwright_http(
-    config: Config, origins: set[str], factory: Callable[[], Any] = playwright_factory
+    config: Config,
+    origins: set[str],
+    failures: dict[str, str],
+    factory: Callable[[], Any] = playwright_factory,
 ) -> Generator[Http]:
     """Requests through the owner's Access session (or service token). Every origin is preflighted first and only then is
-    the request runtime started, because a sync Playwright runtime cannot be started inside a running one. Redirects are never followed."""
+    the request runtime started, because a sync Playwright runtime cannot be started inside a running one. Redirects are never followed. An origin whose preflight fails is
+    recorded in `failures` and its mutant is reported unreachable; credential configuration errors still stop the run."""
     kind = (
         ServiceTokenPreflight
         if config.access_mode == "service_token"
@@ -56,10 +83,8 @@ def playwright_http(
         for origin in sorted(origins):
             try:
                 states[origin] = str(session.preflight(origin + "/"))
-            except (
-                playwright_errors()
-            ):  # an unreachable origin is that mutant's verdict, not a crash
-                continue
+            except (*playwright_errors(), Refused) as exc:
+                failures[origin] = str(exc)[:200]
         with factory() as playwright:
             contexts = {
                 o: playwright.request.new_context(storage_state=state)
@@ -69,34 +94,43 @@ def playwright_http(
             def http(method: str, url: str, body: object) -> tuple[int, object]:
                 if (context := contexts.get(url_origin(url))) is None:
                     return 0, None
+                sent: dict[str, Any] = {}
+                if (
+                    body is not MISSING
+                ):  # an explicit JSON null is a body; an absent one is not
+                    sent = {
+                        "data": json.dumps(body),
+                        "headers": {"Content-Type": "application/json"},
+                    }
+                response = None
                 try:
-                    sent: dict[str, Any] = {}
-                    if (
-                        body is not MISSING
-                    ):  # an explicit JSON null is a body; an absent one is not
-                        sent = {
-                            "data": json.dumps(body),
-                            "headers": {"Content-Type": "application/json"},
-                        }
                     response = context.fetch(
                         url, method=method, max_redirects=0, timeout=30_000, **sent
                     )
-                    raw = response.body()
+                    status, raw = response.status, response.body()
                 except playwright_errors():
                     return 0, None
+                finally:
+                    if response is not None:
+                        response.dispose()  # bodies otherwise stay in memory until the context closes
                 if len(raw) > MAX_BODY:  # never judge a truncated body
                     return 0, None
                 try:
-                    return response.status, parse_json(raw)
+                    return status, parse_json(raw)
                 except InvalidInput:
-                    return response.status, None
+                    return status, None
 
             yield http
 
 
 def dig(value: object, path: str) -> object:
     for part in path.split("."):
-        if isinstance(value, list) and part.isascii() and part.isdigit():
+        if (
+            isinstance(value, list)
+            and part.isascii()
+            and part.isdigit()
+            and len(part) <= 6
+        ):
             items = cast(list[object], value)
             value = items[int(part)] if int(part) < len(items) else MISSING
         elif isinstance(value, dict):
@@ -209,6 +243,10 @@ def add_arguments(commands: Any) -> None:
 
 def run(args: argparse.Namespace, clock: Callable[[], datetime]) -> int:
     catalog = validate("mutant-catalog", load_yaml(args.catalog))
+    try:
+        json.dumps(catalog)  # YAML can load values (!!set, !!binary) that are not JSON
+    except (TypeError, ValueError):
+        raise InvalidInput("Catalog holds a value that is not JSON") from None
     entries = {m["id"]: m for m in catalog["mutants"]}
     if len(entries) != len(catalog["mutants"]) or len(
         {m["ref"] for m in entries.values()}
@@ -230,10 +268,16 @@ def run(args: argparse.Namespace, clock: Callable[[], datetime]) -> int:
         for svc in desc.data["services"]
         if svc["name"] in names and svc["publicUrl"]
     }
-    with playwright_http(Config.load(args.config), origins) as http:
+    failures: dict[str, str] = {}
+    with playwright_http(Config.load(args.config), origins, failures) as http:
         results = [
             validate_mutant(entries[n], baseline, given.get(n), ref, http, at)
             for n in (given or entries)
         ]
-    print(json.dumps({"project": catalog["project"], "results": results}, indent=2))
+    report = {
+        "project": catalog["project"],
+        "results": results,
+        "preflight_failures": failures,
+    }
+    print(json.dumps(report, indent=2))
     return 0 if all(r["validated"] for r in results) else 1

@@ -95,14 +95,13 @@ def _deps(*parts: ast.AST) -> list[tuple[ast.expr, ast.Call]]:
     return [(d, c) for d, c in found if d is not None]
 
 
-def _ident(key: ast.expr) -> Any:  # only statically equal dict keys collapse
+def _ident(key: ast.expr) -> Any:  # only literal dict keys are known to collapse
     try:
         value = ast.literal_eval(key)
         hash(value)
         return ("lit", value)
     except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
-        named = isinstance(key, ast.Name | ast.Attribute)
-        return ("src", ast.unparse(key)) if named else ("id", id(key))
+        return ("id", id(key))
 
 
 def _strs(node: ast.AST | None) -> list[str] | None:

@@ -118,7 +118,7 @@ def test_api_route_scopes_dup_keys_limits_opts_and_status_bounds(
         "from pydantic import Field\napp = FastAPI()\nopts = {}\nr = APIRouter(**opts)\n"
         "@app.api_route('/m', methods=['get', 'POST'],\n"
         "               dependencies=[Security(get_user, scopes=['a:read'])])\n"
-        "def m(): raise HTTPException(2**70)\n"
+        "def m(): raise HTTPException(1180591620717411303424)\n"
         "@r.get('/o')\ndef o(): ...\n"
         "app2 = FastAPI(**opts)\n@app2.get('/f')\ndef f(): ...\n"
         "@app.api_route('/n', methods=None,\n"
@@ -127,7 +127,7 @@ def test_api_route_scopes_dup_keys_limits_opts_and_status_bounds(
         "@app.api_route('/k', **{'methods': ['POST']})\ndef k(): ...\n"
         "class M:\n n: int = Field(multiple_of=5, max_digits=7, decimal_places=2)\n"
         " s: str = Field(regex='^a', min_items=1, max_items=2)\n"
-        "TRANSITIONS = {'a': ['x'], 'a': ['y'], 'b': ['z'], nx(): ['p'], nx(): ['q'], None: ['o'], None: ['n']}\n"
+        "TRANSITIONS = {'a': ['x'], 'a': ['y'], 'b': ['z'], nx(): ['p'], nx(): ['q'], S.n: ['r'], S.n: ['s'], None: ['o'], None: ['n']}\n"
     )
     out = extract_axes(tmp_path)["cells"]
     by = {(c["kind"], c["subject"]): c.get("detail") for c in out}
@@ -146,6 +146,8 @@ def test_api_route_scopes_dup_keys_limits_opts_and_status_bounds(
         "TRANSITIONS: nx() -> 'p'",
         "TRANSITIONS: nx() -> 'q'",
         "TRANSITIONS: None -> 'n'",
+        "TRANSITIONS: S.n -> 'r'",
+        "TRANSITIONS: S.n -> 's'",
     }
     assert ("route", "GET /f") in by and by[("route", "GET /f")] is None  # no prefix
     assert by[("role_check", "GET /n requires get_user")] == {"scopes": ["x", "y"]}

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
+from playwright.sync_api import Error as PlaywrightError
 from test_core import descriptor
 
 from aiqa import mutants
@@ -289,3 +290,57 @@ def test_no_answer_statuses_are_pinned_and_odd_array_indexes_are_missing():
     )
     assert mutants.dig([1], "\u00b2") is mutants.MISSING
     assert mutants.dig([{"a": 1}], "0.a") == 1
+
+
+def test_an_expected_no_answer_status_is_never_a_live_defect():
+    gone = mutant(
+        "route-gone", "m-gone", {"method": "GET", "path": "/x", "status": 404}
+    )
+    result = check(gone, baseline=App("missing"), defect="missing")
+    assert not result["validated"] and len(result["reasons"]) == 2
+
+
+def test_json_equality_keeps_booleans_apart_from_numbers():
+    assert not mutants.same(1, True) and not mutants.same({"a": [0]}, {"a": [False]})
+    assert mutants.same({"a": [True, 1.0]}, {"a": [True, 1]})
+    with pytest.raises(InvalidInput):
+        validate(
+            "mutant-catalog",
+            {
+                **CATALOG,
+                "mutants": [mutant("m-key", "r", {**LIST, "equals": {0: "first"}})],
+            },
+        )
+
+
+def test_transport_serializes_json_bodies_and_reports_an_unreachable_origin(
+    monkeypatch,
+):
+    sent = []
+
+    class Context:
+        def fetch(self, url, **kwargs):
+            sent.append(kwargs)
+            return SimpleNamespace(status=200, body=lambda: b"1")
+
+    def preflight(self, url):
+        if "phub-b" in url:
+            raise PlaywrightError("net::ERR_NAME_NOT_RESOLVED")
+        return Path("s.json")
+
+    factory = lambda: nullcontext(
+        SimpleNamespace(
+            request=SimpleNamespace(new_context=lambda storage_state: Context())
+        )
+    )
+    monkeypatch.setattr(PlaywrightSession, "preflight", preflight)
+    origins = {"https://phub-a.cafitac.com", "https://phub-b.cafitac.com"}
+    with mutants.playwright_http(Config(), origins, factory) as http:
+        for body in ("first", None, mutants.MISSING):
+            assert http("POST", "https://phub-a.cafitac.com/x", body) == (200, 1)
+        assert http("GET", "https://phub-b.cafitac.com/x", None) == (0, None)
+    assert [k.get("data") for k in sent] == ['"first"', "null", None]
+    assert (
+        sent[0]["headers"] == {"Content-Type": "application/json"}
+        and "headers" not in sent[2]
+    )

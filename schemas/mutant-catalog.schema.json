@@ -33,7 +33,7 @@
                     "path": {"type": "string", "pattern": "^/[A-Za-z0-9/_.?=&-]{0,200}(?![\\s\\S])"},
                     "json": {},
                     "status": {"type": "integer", "minimum": 100, "maximum": 599},
-                    "equals": {"type": "object", "maxProperties": 10}
+                    "equals": {"type": "object", "maxProperties": 10, "propertyNames": {"type": "string"}}
                   },
                   "required": ["method", "path", "status"], "additionalProperties": false
                 }

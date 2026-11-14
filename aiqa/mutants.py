@@ -31,7 +31,8 @@ from .contracts import (
 from .secrets import RunSecrets
 
 Http = Callable[[str, str, object], tuple[int, object]]
-# No answer from the app itself: transport error, Access redirect or denial, gateway, missing route.
+# No answer from the app itself: transport error, Access redirect or denial, gateway, missing route. A status in this set is
+# never evidence of a defect, so a seeded defect that only changes a response to 401/403/404/405 cannot be validated by this check.
 NO_ANSWER = {0, 301, 302, 303, 307, 308, 401, 403, 404, 405, 502, 503, 504}
 MISSING = object()
 MAX_BODY = 1 << 20
@@ -51,7 +52,14 @@ def playwright_http(
     with kind(config, factory) as session:
         if isinstance(session, ServiceTokenPreflight):
             session.secrets = RunSecrets.load(config, claude=False)
-        states = {o: str(session.preflight(o + "/")) for o in sorted(origins)}
+        states: dict[str, str] = {}
+        for origin in sorted(origins):
+            try:
+                states[origin] = str(session.preflight(origin + "/"))
+            except (
+                playwright_errors()
+            ):  # an unreachable origin is that mutant's verdict, not a crash
+                continue
         with factory() as playwright:
             contexts = {
                 o: playwright.request.new_context(storage_state=state)
@@ -62,8 +70,16 @@ def playwright_http(
                 if (context := contexts.get(url_origin(url))) is None:
                     return 0, None
                 try:
+                    sent: dict[str, Any] = {}
+                    if (
+                        body is not MISSING
+                    ):  # an explicit JSON null is a body; an absent one is not
+                        sent = {
+                            "data": json.dumps(body),
+                            "headers": {"Content-Type": "application/json"},
+                        }
                     response = context.fetch(
-                        url, method=method, data=body, max_redirects=0, timeout=30_000
+                        url, method=method, max_redirects=0, timeout=30_000, **sent
                     )
                     raw = response.body()
                 except playwright_errors():
@@ -90,19 +106,34 @@ def dig(value: object, path: str) -> object:
     return value
 
 
+def same(got: object, want: object) -> bool:
+    """JSON equality: unlike Python's ==, true is not 1 and false is not 0, at any depth."""
+    if isinstance(got, bool) or isinstance(want, bool):
+        return type(got) is type(want) and got == want
+    if isinstance(got, list) and isinstance(want, list):
+        a, b = cast(list[object], got), cast(list[object], want)
+        return len(a) == len(b) and all(same(x, y) for x, y in zip(a, b, strict=True))
+    if isinstance(got, dict) and isinstance(want, dict):
+        a, b = cast(dict[str, object], got), cast(dict[str, object], want)
+        return a.keys() == b.keys() and all(same(a[k], b[k]) for k in a)
+    return got == want
+
+
 def run_steps(
     base: str, steps: list[dict[str, Any]], http: Http
 ) -> tuple[bool, str | None]:
     """(answered, failure). The check states the correct behavior, so a failure on the mutant is the live defect."""
     for number, step in enumerate(steps, 1):
         label = f"step {number} {step['method']} {step['path']}"
-        status, body = http(step["method"], base + step["path"], step.get("json"))
+        status, body = http(
+            step["method"], base + step["path"], step.get("json", MISSING)
+        )
+        if status in NO_ANSWER:
+            return False, f"{label}: no answer from the app (HTTP {status})"
         if status != step["status"]:
-            if status in NO_ANSWER:
-                return False, f"{label}: no answer from the app (HTTP {status})"
             return True, f"{label}: HTTP {status}, expected {step['status']}"
         for path, want in step.get("equals", {}).items():
-            if (got := dig(body, path)) != want:
+            if not same(got := dig(body, path), want):
                 shown = "absent" if got is MISSING else repr(got)[:80]
                 return True, f"{label}: {path} is {shown}, expected {want!r}"[:300]
     return True, None

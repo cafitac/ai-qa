@@ -496,7 +496,24 @@ def test_raw_success_scenario_and_http_404():
     )
 
 
-def test_timeout_escalates_to_kill(context, tmp_path):
+class VirtualTime:
+    """Stands in for the `time` module inside terminate_group: sleep advances a
+    virtual clock instead of waiting, so the 5 s SIGTERM grace period costs no
+    wall time while the real process group still has to die."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+def test_timeout_escalates_to_kill(context, tmp_path, monkeypatch):
+    clock = VirtualTime()
+    monkeypatch.setattr("aiqa.agents.claude.time", clock)
     seen = {}
     pid_file = tmp_path / "stubborn.pid"
     heartbeat = tmp_path / "heartbeat"
@@ -512,6 +529,7 @@ def test_timeout_escalates_to_kill(context, tmp_path):
         Config(playwright_mcp="@playwright/mcp@0.0.42"), launcher
     ).run(SCENARIO, replace(context, timeout_seconds=0.5))
     assert output.timed_out and seen["process"].returncode == -signal.SIGKILL
+    assert clock.now >= 5  # SIGKILL only after the full grace period
     assert 0.5 <= output.seconds < 5
     assert pid_file.exists()
     stamp = heartbeat.read_text()
@@ -599,32 +617,45 @@ def test_mcp_config_removed_after_launch_error(context, monkeypatch):
     assert seen and all(not path.exists() for path in seen)
 
 
-@pytest.mark.parametrize(
-    "timeout, ignore_term", [(False, False), (True, False), (True, True)]
-)
-def test_runner_collects_cwd_screenshot_and_removes_cwd(context, timeout, ignore_term):
+@pytest.mark.parametrize("timeout", [False, True])
+def test_runner_collects_cwd_screenshot_and_removes_cwd(context, monkeypatch, timeout):
+    # Real process-group termination is covered by the two timeout tests above;
+    # here a fake process isolates screenshot collection and cwd removal.
     seen = {}
+
+    class Process:
+        returncode = None
+
+        def wait(self, timeout=None):
+            if timeout is not None and timeout_case:
+                raise subprocess.TimeoutExpired("agent", timeout)
+            self.returncode = 0
+
+    timeout_case = timeout
+
+    def terminate(process):
+        seen["terminated_with_cwd"] = seen["cwd"].exists()
+        if process.returncode is None:
+            process.returncode = -signal.SIGTERM
+
+    monkeypatch.setattr("aiqa.agents.claude.terminate_group", terminate)
 
     def launcher(command, **kw):
         cwd = Path(kw["cwd"])
         seen["cwd"] = cwd
         assert list(cwd.iterdir()) == []
+        (cwd / "final.png").write_bytes(PNG)
         event = json.dumps({"type": "result", "result": answer(), "num_turns": 1})
-        script = (
-            "import pathlib,time,signal; "
-            + ("signal.signal(signal.SIGTERM, signal.SIG_IGN); " if ignore_term else "")
-            + f"pathlib.Path('final.png').write_bytes({PNG!r}); "
-            f"print({event!r}, flush=True); " + ("time.sleep(60)" if timeout else "")
-        )
-        return subprocess.Popen([sys.executable, "-c", script], **kw)
+        kw["stdout"].write(event.encode() + b"\n")
+        return Process()
 
-    caps = replace(context, timeout_seconds=1) if timeout else context
     output = ClaudeCodeRunner(
         Config(playwright_mcp="@playwright/mcp@0.0.42"), launcher
-    ).run(SCENARIO, caps)
-    assert not seen["cwd"].exists()
+    ).run(SCENARIO, context)
+    assert seen["terminated_with_cwd"] and not seen["cwd"].exists()
+    assert output.timed_out is timeout
     assert (context.output_dir / "final.png").read_bytes() == PNG
-    result = VerdictGate().accept(SCENARIO, output, output.transcript_path, (), caps)
+    result = VerdictGate().accept(SCENARIO, output, output.transcript_path, (), context)
     assert result.status == ("FAILED" if timeout else "PASSED")
     assert result.reason == ("timeout" if timeout else None)
 

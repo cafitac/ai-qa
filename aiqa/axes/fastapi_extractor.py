@@ -4,9 +4,9 @@ import ast
 import math
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from . import Cell
 
@@ -16,7 +16,21 @@ AUTH = re.compile(r"auth|permission|role|admin|scope|require|user", re.IGNORECAS
 FLAG = re.compile(r"enable|disable|flag|feature|toggle", re.IGNORECASE)
 DEPENDS = {"Depends", "Security"}
 FIELDS = {"Field", "Query", "Path", "Body", "Header", "Cookie", "Form"}
-LIMITS = {"min_length", "max_length", "ge", "gt", "le", "lt", "pattern"}
+LIMITS = {
+    "min_length",
+    "max_length",
+    "ge",
+    "gt",
+    "le",
+    "lt",
+    "pattern",
+    "regex",
+    "multiple_of",
+    "max_digits",
+    "decimal_places",
+    "min_items",
+    "max_items",
+}
 VALIDATORS = {"field_validator", "validator", "model_validator", "root_validator"}
 ENUMS = {"Enum", "StrEnum", "IntEnum", "Flag", "IntFlag"}
 ENV = {"os.getenv", "getenv", "os.environ.get", "environ.get"}
@@ -60,7 +74,9 @@ def _kw(call: ast.Call, name: str) -> ast.expr | None:
 def _status(node: ast.AST | None) -> int | None:
     value = _lit(node)
     found = re.fullmatch(r"HTTP_(\d{3})_\w+", _name(node))
-    return value if isinstance(value, int) else int(found[1]) if found else None
+    if isinstance(value, int):
+        return value if _plain(value) else None
+    return int(found[1]) if found else None
 
 
 def _plain(value: Any) -> bool:
@@ -69,14 +85,40 @@ def _plain(value: Any) -> bool:
     return isinstance(value, str) or (isinstance(value, float) and math.isfinite(value))
 
 
-def _deps(*parts: ast.AST) -> list[ast.expr]:
+def _deps(*parts: ast.AST) -> list[tuple[ast.expr, ast.Call]]:
     calls = [c for p in parts for c in ast.walk(p) if isinstance(c, ast.Call)]
     found = [
-        c.args[0] if c.args else _kw(c, "dependency")
+        (c.args[0] if c.args else _kw(c, "dependency"), c)
         for c in calls
         if _name(c) in DEPENDS
     ]
-    return [d for d in found if d is not None]
+    return [(d, c) for d, c in found if d is not None]
+
+
+def _ident(key: ast.expr) -> Any:  # only literal dict keys are known to collapse
+    try:
+        value = ast.literal_eval(key)
+        hash(value)
+        return ("lit", value)
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        return ("id", id(key))
+
+
+def _strs(node: ast.AST | None) -> list[str] | None:
+    value = _lit(node)
+    if not isinstance(value, list | tuple | set):
+        return None
+    return [v for v in cast("Iterable[Any]", value) if isinstance(v, str)]
+
+
+def _verbs(dec: ast.Call, attr: str) -> list[str]:
+    if attr in METHODS:
+        return [attr.upper()]
+    given = _kw(dec, "methods")  # api_route: FastAPI defaults to GET
+    if given is None and any(k.arg is None for k in dec.keywords):
+        return []  # **opts may carry the methods
+    unset = given is None or (isinstance(given, ast.Constant) and given.value is None)
+    return sorted({m.upper() for m in (["GET"] if unset else _strs(given) or [])})
 
 
 class _Scan(ast.NodeVisitor):
@@ -110,19 +152,21 @@ class _Scan(ast.NodeVisitor):
         ctor = self.imported.get(_name(value), _name(value))
         if isinstance(value, ast.Call) and ctor in {"APIRouter", "FastAPI"}:
             prefix = _kw(value, "prefix")  # None stays "unresolved" if not a literal
-            self.prefixes.update(
-                {n: "" if prefix is None else _str(prefix) for n in names}
-            )
+            opts = ctor == "APIRouter" and any(k.arg is None for k in value.keywords)
+            if prefix is None and not opts:
+                resolved: str | None = ""  # APIRouter(**opts) may carry a prefix
+            else:
+                resolved = _str(prefix)
+            self.prefixes.update({n: resolved for n in names})
         if isinstance(value, ast.Dict) and "transition" in "".join(names).lower():
             table = ".".join([*self.scopes, names[0]])
-            for key, ends in zip(value.keys, value.values):
+            last = {_ident(k): (k, e) for k, e in zip(value.keys, value.values) if k}
+            for key, ends in last.values():
                 many = (
                     ends.elts
                     if isinstance(ends, ast.List | ast.Set | ast.Tuple)
                     else [ends]
                 )
-                if key is None:
-                    continue
                 for end in many:
                     src, dst = ast.unparse(key), ast.unparse(end)
                     self.add(node, "transition", f"{table}: {src} -> {dst}")
@@ -192,25 +236,33 @@ class _Scan(ast.NodeVisitor):
             elif (
                 isinstance(dec, ast.Call)
                 and isinstance(dec.func, ast.Attribute)
-                and dec.func.attr in METHODS
+                and dec.func.attr in METHODS | {"api_route"}
             ):
                 recv = _name(dec.func.value)
                 path = _str(dec.args[0] if dec.args else _kw(dec, "path"))
                 if path is not None and recv in self.prefixes:
                     prefix = self.prefixes[recv]
-                    route = f"{dec.func.attr.upper()} {prefix or ''}{path}"
-                    routes.append((route, f"{recv}:", dec))
                     note = {} if prefix is not None else {"prefix": "unresolved"}
-                    self.add(node, "route", route, f"{recv}:", **note)
+                    for verb in _verbs(dec, dec.func.attr):
+                        route = f"{verb} {prefix or ''}{path}"
+                        routes.append((route, f"{recv}:", dec))
+                        self.add(node, "route", route, f"{recv}:", **note)
         for route, ns, dec in routes:
-            for dep in [d for d in _deps(dec, node.args) if AUTH.search(_name(d))]:
+            found = dict[str, set[str]]()  # role -> scopes of every Security use
+            for dep, call in _deps(dec, node.args):
+                if not AUTH.search(_name(dep)):
+                    continue
+                scopes = _strs(_kw(call, "scopes")) if _name(call) == "Security" else []
                 vals = (
                     [*dep.args, *(k.value for k in dep.keywords)]
                     if isinstance(dep, ast.Call)
                     else []
                 )
                 for role in [s for a in vals if (s := _str(a))] or [_name(dep)]:
-                    self.add(node, "role_check", f"{route} requires {role}", ns)
+                    found.setdefault(role, set()).update(scopes or [])
+            for role, scopes in found.items():
+                note = {"scopes": sorted(scopes)} if scopes else {}
+                self.add(node, "role_check", f"{route} requires {role}", ns, **note)
         owners = [(r, ns) for r, ns, _ in routes] or [(qualified, "")]
         self._scoped(node, node.name, owners)
 

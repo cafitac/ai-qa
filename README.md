@@ -125,7 +125,8 @@ resolved), and only a router's own `prefix` applies; a non-literal prefix is
 marked `detail.prefix: unresolved`. Not read: `include_router` prefixes,
 router-level dependencies, `Query`/`Path`/`Annotated[...]` limits (class-body
 `Field(...)` limits only), import aliases other than the router constructors,
-and `_ignore_` enum contents. Dependencies are matched by name.
+`_ignore_` enum contents, and non-literal `api_route` `methods` or `Security`
+`scopes`. Dependencies are matched by name.
 
 ## Reading a report
 

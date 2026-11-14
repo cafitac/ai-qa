@@ -107,10 +107,13 @@ is imported, run or fetched) and prints JSON `ai-qa/axes/v1` with `axes`
 observed cells (`source: observed`, `platform: web`, a qa-design `axis`) for
 routes, role dependencies, enums and transition tables, pydantic validators and
 field limits, environment feature flags and `HTTPException` responses. Each cell
-has a stable `key`, `kind`, `subject`, `file`, `line` and optional `detail`. An unsupported stack
-prints `axes: unknown` and exits 0; a missing path exits 2. Only a router's own
-`prefix` is applied (`include_router` prefixes and router-level dependencies
-are not read); dependencies are matched by name.
+has a stable `key`, `kind`, `subject`, `file`, `line` and optional `detail`. An
+unsupported stack prints `axes: unknown` and exits 0; a missing path exits 2.
+Routes are read only on routers and apps constructed in the same module, and only
+a router's own `prefix` applies. Not read: `include_router` prefixes,
+router-level dependencies, `Query`/`Path`/`Annotated[...]` limits (class-body
+`Field(...)` limits only), import aliases other than the router constructors,
+and `_ignore_` enum contents. Dependencies are matched by name.
 
 ## Reading a report
 

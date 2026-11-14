@@ -64,9 +64,9 @@ def _status(node: ast.AST | None) -> int | None:
 
 
 def _plain(value: Any) -> bool:
-    return isinstance(value, str) or (
-        isinstance(value, int | float) and math.isfinite(value)
-    )
+    if isinstance(value, int):  # beyond 64 bits is not representable downstream
+        return abs(value) < 2**63
+    return isinstance(value, str) or (isinstance(value, float) and math.isfinite(value))
 
 
 def _deps(*parts: ast.AST) -> list[ast.expr]:
@@ -182,19 +182,17 @@ class _Scan(ast.NodeVisitor):
         qualified = ".".join([*self.scopes, node.name])
         routes: list[tuple[str, ast.Call]] = []
         for dec in node.decorator_list:
-            if not isinstance(dec, ast.Call):
-                continue
             if _name(dec) in VALIDATORS:
                 self.add(node, "validator", qualified)
-            elif isinstance(dec.func, ast.Attribute) and dec.func.attr in METHODS:
+            elif (
+                isinstance(dec, ast.Call)
+                and isinstance(dec.func, ast.Attribute)
+                and dec.func.attr in METHODS
+            ):
                 recv = _name(dec.func.value)
                 path = _str(dec.args[0] if dec.args else _kw(dec, "path"))
-                if path is not None and (
-                    recv in self.prefixes or recv in self.imported
-                ):
-                    route = (
-                        f"{dec.func.attr.upper()} {self.prefixes.get(recv, '')}{path}"
-                    )
+                if path is not None and recv in self.prefixes:
+                    route = f"{dec.func.attr.upper()} {self.prefixes[recv]}{path}"
                     routes.append((route, dec))
                     self.add(node, "route", route)
         for route, dec in routes:

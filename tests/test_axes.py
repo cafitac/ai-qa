@@ -77,7 +77,9 @@ def test_aliases_scopes_and_unsupported_values(tmp_path: Path) -> None:
         "from enum import Enum\nfrom pydantic import Field\napp = API()\n"
         "class A:\n class S(Enum):\n  NEW = 1\n  _ignore_ = 'x'\n"
         "class B:\n class S(Enum):\n  OLD = 2\n"
-        "class M:\n n: int = Field(le=1e999, ge=1)\n"
+        f"class M:\n n: int = Field(le=1e999, ge=1, gt=1{'0' * 400})\n"
+        "class V:\n @root_validator\n def r(cls, v): ...\n"
+        "from hooks import hooks\n@hooks.get('created')\ndef h(): ...\n"
         "reg = {}\n@reg.get('y')\ndef y(): ...\n@app.get(path='/x')\n"
         "def x():\n raise HTTPException(status.HTTP_400_BAD_REQUEST + 1)\n"
     )
@@ -88,4 +90,5 @@ def test_aliases_scopes_and_unsupported_values(tmp_path: Path) -> None:
     assert by[("enum", "A.S")] == {"values": ["NEW"]} and ("enum", "B.S") in by
     assert by[("constraint", "M.n")] == {"ge": 1} and ("route", "GET /x") in by
     assert by[("error_response", "GET /x None")] == {"status": None}
-    assert ("route", "GET y") not in by
+    assert ("route", "GET y") not in by and ("route", "GET created") not in by
+    assert ("validator", "V.r") in by

@@ -2,7 +2,7 @@
   "type": "object",
   "properties": {
     "apiVersion": {
-      "const": "ai-qa/v1"
+      "enum": ["ai-qa/v1", "ai-qa/v2"]
     },
     "scenarios": {
       "type": "array",
@@ -57,6 +57,29 @@
             "type": "string",
             "pattern": "^[1-9][0-9]*[smhd](?![\\s\\S])",
             "maxLength": 10
+          },
+          "ac": {
+            "description": "v2: acceptance criteria this scenario verifies.",
+            "type": "array",
+            "items": {"type": "string", "pattern": "^AC[0-9]{1,4}(?![\\s\\S])"},
+            "minItems": 1,
+            "maxItems": 20,
+            "uniqueItems": true
+          },
+          "cells": {
+            "description": "v2: QA design matrix cells this scenario covers.",
+            "type": "array",
+            "items": {"type": "string", "pattern": "^C-[0-9]{1,5}(?![\\s\\S])"},
+            "minItems": 1,
+            "maxItems": 50,
+            "uniqueItems": true
+          },
+          "kind": {"description": "v2: happy when absent.", "enum": ["happy", "negative", "boundary"]},
+          "origin": {"description": "v2.", "enum": ["skeleton", "generated", "critic", "golden"]},
+          "data": {
+            "description": "v2: per-shard data namespace; parallel shards need declared isolation.",
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{1,40}(?![\\s\\S])"
           }
         },
         "required": [
@@ -75,5 +98,15 @@
     "scenarios"
   ],
   "additionalProperties": false,
+  "if": {"properties": {"apiVersion": {"const": "ai-qa/v1"}}},
+  "then": {
+    "properties": {
+      "scenarios": {
+        "items": {
+          "not": {"anyOf": [{"required": ["ac"]}, {"required": ["cells"]}, {"required": ["kind"]}, {"required": ["origin"]}, {"required": ["data"]}]}
+        }
+      }
+    }
+  },
   "$schema": "https://json-schema.org/draft/2020-12/schema"
 }

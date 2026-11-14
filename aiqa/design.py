@@ -6,7 +6,15 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from .contracts import InvalidInput, load_json, load_yaml, validate
+from .contracts import (
+    InvalidInput,
+    ScenarioLinks,
+    load_json,
+    load_yaml,
+    manifest_links,
+    scenario_links,
+    validate,
+)
 
 Doc = dict[str, Any]
 COVERING = ("in", "regression")
@@ -75,14 +83,58 @@ def check(spec: Doc, design: Doc) -> list[Gap]:
     return gaps
 
 
+def check_linkage(design: Doc, scenarios: list[ScenarioLinks]) -> list[Gap]:
+    """Pure scenario-linkage rules: G4 (cell -> scenario or waiver), G6 (budget)."""
+    gaps: list[Gap] = []
+    waived = {w["cell"] for w in design.get("waivers", []) if "cell" in w}
+    live = [c for c in design["matrix"] if c["scope"] in COVERING]
+    covered = {c for s in scenarios for c in s.cells}
+    for c in live:
+        if c["id"] not in covered and c["id"] not in waived:
+            gaps.append(Gap("G4_CELL_UNTESTED", c["id"], "no scenario and no waiver"))
+    tiers: list[str] = sorted(design["budget"])
+    for tier in tiers:
+        limits = design["budget"][tier]
+        cells = {c["id"] for c in live if c["risk"] == tier} - waived
+        if not cells:  # a waiver exempts only its own cell, never the tier
+            continue
+        mine = [s for s in scenarios if cells & set(s.cells)]
+        neg = sum(s.kind == "negative" for s in mine)
+        bnd = sum(s.kind == "boundary" for s in mine)
+        short = [
+            f"{name} {have} < {need}"
+            for name, have, need in (
+                ("scenarios", len(mine), limits["min"]),
+                ("negative", neg, limits["minNegative"]),
+                ("boundary", bnd, limits["minBoundary"]),
+                ("nonHappy", neg + bnd, limits["nonHappyShare"] * len(mine)),
+            )
+            if have < need - 1e-9
+        ]
+        if short:
+            gaps.append(Gap("G6_BUDGET_SHORT", tier, ", ".join(short)))
+    return gaps
+
+
+def load_linkage(path: Path) -> list[ScenarioLinks]:
+    """A directory of `<service>.yaml` scenario files, or a qa/manifest.json file."""
+    if path.is_dir():
+        found: list[ScenarioLinks] = []
+        for file in sorted(path.glob("*.yaml")):
+            found += scenario_links(load_yaml(file), file.stem)
+        return found
+    return manifest_links(load_json(path))
+
+
 def run_check(spec: Path, design: Path, scenarios: Path | None, fmt: str) -> int:
-    if scenarios is not None:
-        raise InvalidInput("--scenarios is not supported until ai-qa/v2")
     spec_doc = validate("spec", load_json(spec))
     design_doc = validate("qa-design", load_yaml(design))
     if spec_doc["feature"] != design_doc["feature"]:
         raise InvalidInput("Spec and design name different features")
+    linked = None if scenarios is None else load_linkage(scenarios)
     gaps = check(spec_doc, design_doc)
+    if linked is not None:
+        gaps += check_linkage(design_doc, linked)
     if fmt == "json":
         print(json.dumps({"ok": not gaps, "gaps": [asdict(g) for g in gaps]}))
     else:

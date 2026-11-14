@@ -75,16 +75,29 @@ Optional `aiqa.yaml` / `--config FILE` configures budgets and output paths. `AIQ
 
 ## QA design check
 
-`aiqa design check --spec spec.json --design qa/design.yaml [--format json|text]`
+`aiqa design check --spec spec.json --design qa/design.yaml [--scenarios DIR|manifest.json] [--format json|text]`
 checks a QA design (`ai-qa/qa-design/v1`) against the acceptance criteria in a
 spec export (`ai-qa/spec/v1`) without any network or run state. Exit 0: no
 gaps; 1: gaps, each `{code, subject, detail}`; 2: invalid input (unreadable or
 malformed files, schema violations, a spec and design that name different
-`feature` values, or `--scenarios`, which is not supported
-until `ai-qa/v2`). Gap codes: `G1_AC_UNMAPPED`, `G1_AC_NOT_COVERED`,
+`feature` values). Gap codes: `G1_AC_UNMAPPED`, `G1_AC_NOT_COVERED`,
 `G1_AC_UNKNOWN`, `G2_REQ_NO_CELL`, `G3_SCOPE_MISMATCH`, `G3_RISK_MISMATCH`,
 `G5_OBSERVED_NO_EXPECTED`, `G7_DUPLICATE_ID`, `G7_DANGLING_REF`. Schemas:
 `schemas/qa-design.schema.json`, `schemas/spec.schema.json`.
+
+With `--scenarios` (a directory of `<service>.yaml` scenario files, or a
+`qa/manifest.json`, `schemas/scenario-manifest.schema.json`) two more rules run:
+`G4_CELL_UNTESTED` (an `in`/`regression` cell that no scenario lists in `cells`
+and no cell waiver covers) and `G6_BUDGET_SHORT` (a risk tier with covering
+cells whose scenarios miss the design `budget`: `min`, `minNegative`,
+`minBoundary`, `nonHappyShare`; a scenario counts toward each tier its cells
+belong to, `kind` defaults to `happy`; waived cells are left out of the tier,
+and a tier with no unwaived cell is skipped).
+
+Scenario files may use `apiVersion: ai-qa/v2`, which adds the optional `ac`,
+`cells`, `kind` (`happy|negative|boundary`), `origin`
+(`skeleton|generated|critic|golden`) and `data` fields; `ai-qa/v1` files stay
+valid and run unchanged (v1 files may not carry the v2 fields).
 
 ## Reading a report
 

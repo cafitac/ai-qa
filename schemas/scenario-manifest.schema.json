@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "qa/manifest.json: generator output committed next to the scenarios so runs at that commit are attributable.",
+  "type": "object",
+  "properties": {
+    "apiVersion": {"const": "ai-qa/manifest/v1"},
+    "generationId": {"type": "integer", "minimum": 1},
+    "generatorVersion": {"type": "integer", "minimum": 1},
+    "rulesetVersion": {"type": "integer", "minimum": 1},
+    "model": {"type": "string", "minLength": 1, "maxLength": 200},
+    "scenarios": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"description": "service/scenario id", "type": "string", "pattern": "^[a-z][a-z0-9-]{1,20}/[a-z][a-z0-9-]{1,40}(?![\\s\\S])"},
+          "ac": {"type": "array", "items": {"type": "string", "pattern": "^AC[0-9]{1,4}(?![\\s\\S])"}, "minItems": 1, "maxItems": 20, "uniqueItems": true},
+          "cells": {"type": "array", "items": {"type": "string", "pattern": "^C-[0-9]{1,5}(?![\\s\\S])"}, "minItems": 1, "maxItems": 50, "uniqueItems": true},
+          "kind": {"enum": ["happy", "negative", "boundary"]},
+          "origin": {"enum": ["skeleton", "generated", "critic", "golden"]}
+        },
+        "required": ["id", "ac", "cells", "kind", "origin"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["apiVersion", "generationId", "generatorVersion", "rulesetVersion", "model", "scenarios"],
+  "additionalProperties": false
+}

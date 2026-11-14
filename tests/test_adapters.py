@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -517,22 +518,32 @@ def test_timeout_escalates_to_kill(context, tmp_path, monkeypatch):
     seen = {}
     pid_file = tmp_path / "stubborn.pid"
     heartbeat = tmp_path / "heartbeat"
-    child = f"import signal,time,pathlib; signal.signal(signal.SIGTERM,signal.SIG_IGN); p=pathlib.Path({str(heartbeat)!r});\nwhile True: p.write_text(str(time.monotonic())); time.sleep(0.02)"
-    script = f"import signal,time,subprocess,pathlib; signal.signal(signal.SIGTERM,signal.SIG_IGN); p=subprocess.Popen([{sys.executable!r},'-c',{child!r}]); pathlib.Path({str(pid_file)!r}).write_text(str(p.pid)); time.sleep(60)"
+    # Readiness latch: the leader closes `ready` after writing the pid file and the
+    # grandchild after its first heartbeat; EOF on `latch` means the tree is up.
+    latch, ready = os.pipe()
+    child = f"import os,signal,time,pathlib; signal.signal(signal.SIGTERM,signal.SIG_IGN); p=pathlib.Path({str(heartbeat)!r}); p.write_text(str(time.monotonic())); os.close({ready});\nwhile True: p.write_text(str(time.monotonic())); time.sleep(0.02)"
+    script = f"import os,signal,time,subprocess,pathlib; signal.signal(signal.SIGTERM,signal.SIG_IGN); p=subprocess.Popen([{sys.executable!r},'-c',{child!r}],pass_fds=({ready},)); pathlib.Path({str(pid_file)!r}).write_text(str(p.pid)); os.close({ready}); time.sleep(60)"
 
     def launcher(command, **kwargs):
-        started = time.monotonic()
-        process = subprocess.Popen([sys.executable, "-c", script], **kwargs)
-        seen["process"] = process
         # The virtual clock removes the 5 s grace in which the tree used to finish
         # starting, so start the 0.5 s timeout only once the whole tree is up.
-        deadline = started + 10
-        while not (pid_file.exists() and heartbeat.exists()):
-            if time.monotonic() >= deadline:
+        started = time.monotonic()
+        try:
+            process = subprocess.Popen(
+                [sys.executable, "-c", script], pass_fds=(ready,), **kwargs
+            )
+        finally:
+            os.close(ready)
+        seen["process"] = process
+        try:
+            up, _, _ = select.select([latch], [], [], 10)
+            if not up:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
                 pytest.fail("process tree did not start within 10 s")
-            time.sleep(0.01)
+            assert os.read(latch, 1) == b""
+        finally:
+            os.close(latch)
         seen["startup"] = time.monotonic() - started
         return process
 

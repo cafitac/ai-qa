@@ -192,6 +192,7 @@ class Config:
     service_token_file: Path = Path("/run/secrets/access_service_token.json")
     claude_token_file: Path = Path("/run/secrets/claude_token")
     playwright_mcp: str | None = "@playwright/mcp@0.0.83"
+    login_browser_channel: str = "chrome"
 
     @classmethod
     def parse(cls, value: object, environ: Mapping[str, str] | None = None) -> Config:
@@ -244,6 +245,9 @@ class Config:
                 runs_dir=Path(runs_path).expanduser(),
                 state_file=Path(state_path).expanduser(),
                 playwright_mcp=d.get("playwright_mcp", cls.playwright_mcp),
+                login_browser_channel=d.get("login", {}).get(
+                    "browser_channel", cls.login_browser_channel
+                ),
             )
         except (ValueError, RuntimeError) as exc:
             raise InvalidInput("Invalid configured path") from exc

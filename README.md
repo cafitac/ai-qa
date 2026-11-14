@@ -27,6 +27,16 @@ cookies are not kept. The environment zone is set by
 `hub.environment_domain` (default `cafitac.com`). Re-run `aiqa login` when the
 Access session expires.
 
+Login opens the installed Google Chrome in a fresh temporary profile (never your
+own Chrome profile), so the passkey dialog offers "use a phone or tablet" (QR)
+and iCloud Keychain, which Playwright's bundled Chromium lacks. If Chrome cannot
+be launched, login prints a one-line note and falls back to the bundled Chromium,
+where phone passkeys may be unavailable. Set `login.browser_channel` in
+`aiqa.yaml` to `chrome` (default), `msedge`, or `chromium` (always use the bundled
+browser). Only login changes: headless runs and `doctor` keep using the bundled
+Chromium, and the agent's Playwright MCP browser selection (`agent.browser`) is
+unchanged.
+
 ## Writing scenarios
 
 K1 files live at `qa/scenarios.yaml` in each public service repository. The

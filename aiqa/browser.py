@@ -127,9 +127,26 @@ class PlaywrightSession:
             )
             raise BrowserFailure(message) from exc
 
+    def _launch_login_browser(self, playwright: Any) -> Any:
+        # Only login prefers an installed browser: the bundled Chromium offers
+        # no phone (QR) passkey or iCloud Keychain. The context stays a fresh
+        # temporary profile; the owner's real browser profile is never used.
+        channel = self.config.login_browser_channel
+        if channel == "chromium":
+            return playwright.chromium.launch(headless=False)
+        try:
+            return playwright.chromium.launch(headless=False, channel=channel)
+        except playwright_errors() as exc:
+            cause = (str(exc).strip().splitlines() or ["unknown error"])[0][:120]
+            print(
+                f"{channel} could not be launched ({cause}); using bundled "
+                "Chromium (phone passkeys may be unavailable)"
+            )
+            return playwright.chromium.launch(headless=False)
+
     def _login(self) -> None:
         with self.factory() as playwright:
-            browser = playwright.chromium.launch(headless=False)
+            browser = self._launch_login_browser(playwright)
             try:
                 context = browser.new_context()
                 page = context.new_page()

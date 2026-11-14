@@ -92,6 +92,19 @@
     "playwright_mcp": {
       "type": "string"
     },
+    "login": {
+      "type": "object",
+      "properties": {
+        "browser_channel": {
+          "enum": [
+            "chrome",
+            "msedge",
+            "chromium"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "access": {
       "type": "object",
       "properties": {

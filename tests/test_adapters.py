@@ -15,7 +15,7 @@ import pytest
 
 from aiqa.agents.claude import TOOLS, ClaudeCodeRunner, parse_stream, prompt
 from aiqa.agents.codex import CodexRunner
-from aiqa.browser import PlaywrightSession
+from aiqa.browser import BrowserFailure, PlaywrightSession
 from aiqa.contracts import Config, InvalidInput, Scenario, url_origin
 from aiqa.doctor import doctor
 from aiqa.gate import VerdictGate
@@ -325,6 +325,103 @@ def test_login_modes_and_preflight_cleanup(tmp_path, capsys):
         state = session.preflight(config.dashboard_url)
         assert state != config.state_file and state.stat().st_mode & 0o777 == 0o600
     assert not state.exists() and config.state_file.exists()
+
+
+class LaunchRecorder(FakePlaywright):
+    def __init__(self, fail_channel=False):
+        super().__init__()
+        self.launches = []
+        self.fail_channel = fail_channel
+
+        def launch(**kw):
+            self.launches.append(kw)
+            if self.fail_channel and "channel" in kw:
+                from playwright.sync_api import Error
+
+                raise Error("Chromium distribution 'chrome' is not found")
+            return self
+
+        self.chromium = SimpleNamespace(launch=launch, executable_path=sys.executable)
+
+
+def login_config(tmp_path, **kw):
+    return Config(
+        dashboard_url="https://demo.example/", state_file=tmp_path / "s.json", **kw
+    )
+
+
+def test_login_launches_installed_chrome_by_default(tmp_path):
+    fake = LaunchRecorder()
+    PlaywrightSession(login_config(tmp_path), lambda: fake).login()
+    assert fake.launches == [{"headless": False, "channel": "chrome"}]
+
+
+@pytest.mark.parametrize(
+    ("channel", "expected"),
+    [
+        ("msedge", {"headless": False, "channel": "msedge"}),
+        ("chromium", {"headless": False}),
+    ],
+)
+def test_login_channel_override(tmp_path, channel, expected):
+    fake = LaunchRecorder()
+    config = login_config(tmp_path, login_browser_channel=channel)
+    PlaywrightSession(config, lambda: fake).login()
+    assert fake.launches == [expected]
+
+
+def test_login_falls_back_to_bundled_chromium(tmp_path, capsys):
+    fake = LaunchRecorder(fail_channel=True)
+    PlaywrightSession(login_config(tmp_path), lambda: fake).login()
+    assert fake.launches == [
+        {"headless": False, "channel": "chrome"},
+        {"headless": False},
+    ]
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].startswith("chrome could not be launched (")
+    assert "is not found" in out[0]
+    assert "phone passkeys may be unavailable" in out[0]
+    assert out[1] == "session saved (1 Access cookies)"
+
+
+def test_login_uses_fresh_context_and_reports_double_launch_failure(tmp_path):
+    fake = LaunchRecorder()
+    contexts = []
+    fake.new_context = lambda **kw: contexts.append(kw) or fake
+    PlaywrightSession(login_config(tmp_path), lambda: fake).login()
+    assert contexts == [{}]
+
+    from playwright.sync_api import Error
+
+    def launch(**kw):
+        raise Error("boom")
+
+    broken = LaunchRecorder()
+    broken.chromium = SimpleNamespace(launch=launch)
+    with pytest.raises(BrowserFailure, match="browser error"):
+        PlaywrightSession(login_config(tmp_path), lambda: broken).login()
+
+
+def test_preflight_stays_on_bundled_chromium(tmp_path):
+    state = tmp_path / "s.json"
+    state.write_text('{"cookies": [], "origins": []}')
+    state.chmod(0o600)
+    fake = LaunchRecorder()
+    session = PlaywrightSession(login_config(tmp_path), lambda: fake)
+    with session:
+        session.preflight("https://demo.example/")
+    assert fake.launches == [{"headless": True}]
+
+
+def test_login_channel_config():
+    def parse(extra):
+        return Config.parse({"apiVersion": "ai-qa/v1", **extra}, {})
+
+    assert parse({}).login_browser_channel == "chrome"
+    chosen = parse({"login": {"browser_channel": "msedge"}})
+    assert chosen.login_browser_channel == "msedge"
+    with pytest.raises(InvalidInput):
+        parse({"login": {"browser_channel": "firefox"}})
 
 
 def test_login_refuses_non_http_only(tmp_path):

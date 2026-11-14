@@ -3,6 +3,7 @@
 import json
 import re
 import runpy
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -170,7 +171,7 @@ def run_cleanup(tmp_path, list_present, inventory_rc):
     fake.chmod(0o755)
     driver = tmp_path / "driver.sh"
     driver.write_text(
-        f"set -eu\nphub={fake}\nwork=$(mktemp -d)\nok=qa-ok-1\nbroken=qa-broken-1\n"
+        f"set -eu\nphub={shlex.quote(str(fake))}\nwork=$(mktemp -d)\nok=qa-ok-1\nbroken=qa-broken-1\n"
         f"created_ok=1\ncreated_broken=0\ncalls=0\n# down{block}\ncleanup\n"
     )
     env = {

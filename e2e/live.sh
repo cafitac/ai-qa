@@ -16,7 +16,8 @@ created_ok=0
 created_broken=0
 calls=0
 check() { .venv/bin/python e2e/check.py "$@"; }
-# down is asynchronous: poll until the name leaves the list, then until the inventory
+# down is asynchronous and phub-remote has no wait for it (wait-ready covers READY only):
+# poll until the name leaves the list, then until the inventory
 # is empty. Polls are bounded; exit 2 (bad request, missing binary) is not retried.
 # Output is never printed; AIQA_POLL_SECONDS only shortens the wait for tests.
 absent() {

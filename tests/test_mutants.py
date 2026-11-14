@@ -1,0 +1,244 @@
+import json
+from contextlib import nullcontext
+from datetime import UTC, datetime
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+import yaml
+from test_core import descriptor
+
+from aiqa import mutants
+from aiqa.browser import PlaywrightSession
+from aiqa.cli import main as cli_main
+from aiqa.contracts import Config, EnvironmentDescriptor, InvalidInput, validate
+
+NOW = datetime(2040, 1, 15, tzinfo=UTC)
+LONG = "aqp-truncate-" + "y" * 40
+BASE = {"id": "x-mutant", "service": "backend", "category": "cat", "axis": "axs"}
+
+
+def post(text, **extra):
+    return {
+        "method": "POST",
+        "path": "/api/notes",
+        "json": {"text": text},
+        "status": 201,
+        **extra,
+    }
+
+
+def mutant(name, ref, *steps):
+    check, scenarios = {"steps": list(steps)}, ["frontend/add-note-shows-first"]
+    return {
+        **BASE,
+        "id": name,
+        "ref": ref,
+        "split": "DEV",
+        "scenarios": scenarios,
+        "check": check,
+    }
+
+
+LIST = {
+    "method": "GET",
+    "path": "/api/notes",
+    "status": 200,
+    "equals": {"0.text": "second"},
+}
+ORDER = mutant("list-order-asc", "m-order", post("first"), post("second"), LIST)
+TRUNCATE = mutant("text-truncated", "m-trunc", post(LONG, equals={"text": LONG}))
+CATALOG = {
+    "apiVersion": "ai-qa/mutants/v1",
+    "project": "demo",
+    "mutants": [ORDER, TRUNCATE],
+}
+
+
+class App:
+    """The notes API of the example backend with one optional seeded defect."""
+
+    def __init__(self, defect=None):
+        self.defect, self.notes = defect, [{"text": "Welcome"}]
+
+    def __call__(self, method, path, body):
+        if self.defect in ("down", "missing"):
+            return (0, None) if self.defect == "down" else (404, None)
+        if method == "POST":
+            text = body["text"][:40] if self.defect == "truncate" else body["text"]
+            self.notes.insert(0, {"text": text})
+            return 201, self.notes[0]
+        return 200, self.notes[::-1] if self.defect == "order" else self.notes
+
+
+def env(name, ref, host, state="READY"):
+    d = descriptor(NOW)
+    d.update(name=name, state=state)
+    d["services"] = [
+        {
+            **d["services"][0],
+            "name": "backend",
+            "ref": ref,
+            "publicUrl": f"https://{host}",
+        }
+    ]
+    return EnvironmentDescriptor.parse(d)
+
+
+def http_for(apps):
+    return lambda method, url, body: apps[url.split("/")[2]](
+        method, "/" + url.split("/", 3)[3], body
+    )
+
+
+def check(entry, baseline=None, defect=None, mutant_ref=None):
+    apps = {"base.test": baseline or App(), "mut.test": App(defect)}
+    desc = (
+        env("mut", mutant_ref or entry["ref"], "mut.test")
+        if mutant_ref != "none"
+        else None
+    )
+    return mutants.validate_mutant(
+        entry, env("base", "main", "base.test"), desc, "main", http_for(apps), NOW
+    )
+
+
+@pytest.mark.parametrize(
+    ("entry", "defect"), [(ORDER, "order"), (TRUNCATE, "truncate")]
+)
+def test_live_defect_is_validated_with_evidence(entry, defect):
+    result = check(entry, defect=defect)
+    assert result["validated"] and result["reasons"] == []
+    assert (
+        result["check_ref"].startswith("http:aaaaaaaaaaaa:step ")
+        and result["ref"] == entry["ref"]
+    )
+
+
+def test_defect_that_is_not_live_is_not_validated():
+    result = check(ORDER)
+    assert (result["validated"], result["check_ref"]) == (False, None)
+    assert result["reasons"] == ["defect is not live: the check passes on the mutant"]
+
+
+def test_check_that_fails_on_the_baseline_is_not_validated():
+    result = check(ORDER, baseline=App("order"), defect="order")
+    assert result["reasons"] == [
+        "baseline does not pass the check: step 3 GET /api/notes: 0.text is 'Welcome', expected 'second'"
+    ]
+
+
+@pytest.mark.parametrize(("defect", "status"), [("down", 0), ("missing", 404)])
+def test_unreachable_mutant_is_not_validated(defect, status):
+    assert check(ORDER, defect=defect)["reasons"] == [
+        f"mutant is not reachable: step 1 POST /api/notes: no answer from the app (HTTP {status})"
+    ]
+
+
+def test_environment_problems_stop_the_check_before_any_request():
+    assert check(ORDER, mutant_ref="other")["reasons"] == [
+        "mutant: service backend@m-order is not in mut"
+    ]
+    assert check(ORDER, baseline=App("down"), mutant_ref="none")["reasons"] == [
+        "mutant: environment descriptor missing"
+    ]
+    failed = mutants.validate_mutant(
+        ORDER,
+        env("base", "main", "base.test", "FAILED"),
+        None,
+        "main",
+        http_for({}),
+        NOW,
+    )
+    assert failed["reasons"][0] == "baseline: environment not ready: state=FAILED"
+
+
+def run_cli(
+    tmp_path,
+    monkeypatch,
+    apps,
+    catalog=CATALOG,
+    names=("list-order-asc", "text-truncated"),
+):
+    def write(name, value):
+        text = json.dumps(value) if name.endswith(".json") else yaml.safe_dump(value)
+        (tmp_path / name).write_text(text)
+        return str(tmp_path / name)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        mutants, "playwright_http", lambda *_: nullcontext(http_for(apps))
+    )
+    base = write("b.json", env("base", "main", "base.test").data)
+    args = [
+        "mutant",
+        "validate",
+        "--catalog",
+        write("c.yaml", catalog),
+        "--baseline",
+        base,
+    ]
+    for name, ref in zip(names, ("m-order", "m-trunc"), strict=False):
+        path = write(f"{name}.json", env(name[:8], ref, f"{name}.test").data)
+        args += ["--mutant", f"{name}={path}"]
+    return cli_main(args, clock=lambda: NOW)
+
+
+def verdicts(capsys):
+    return [r["validated"] for r in json.loads(capsys.readouterr().out)["results"]]
+
+
+def test_cli_prints_results_and_exits_zero_only_when_all_validated(
+    tmp_path, monkeypatch, capsys
+):
+    apps = {
+        "base.test": App(),
+        "list-order-asc.test": App("order"),
+        "text-truncated.test": App("truncate"),
+    }
+    assert run_cli(tmp_path, monkeypatch, apps) == 0
+    assert verdicts(capsys) == [True, True]
+    apps["text-truncated.test"] = App()
+    assert run_cli(tmp_path, monkeypatch, apps) == 1
+    assert verdicts(capsys) == [True, False]
+
+
+def test_malformed_catalog_or_mutant_argument_is_refused(tmp_path, monkeypatch):
+    duplicate = {**CATALOG, "mutants": [ORDER, {**TRUNCATE, "ref": "m-order"}]}
+    assert run_cli(tmp_path, monkeypatch, {}, catalog=duplicate) == 2
+    assert run_cli(tmp_path, monkeypatch, {}, names=("nope",)) == 2
+    with pytest.raises(InvalidInput):
+        validate("mutant-catalog", {**CATALOG, "mutants": [{**ORDER, "split": "LIVE"}]})
+
+
+def test_transport_preflights_each_host_and_never_follows_redirects(monkeypatch):
+    fetched, preflights = [], []
+
+    class Context:
+        def fetch(self, url, **kwargs):
+            fetched.append((url, kwargs))
+            status = 302 if url.endswith("/redirect") else 201
+            return SimpleNamespace(status=status, body=lambda: b'{"ok": true}')
+
+    class Factory:
+        def __enter__(self):
+            new_context = lambda storage_state: Context()
+            return SimpleNamespace(request=SimpleNamespace(new_context=new_context))
+
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr(
+        PlaywrightSession,
+        "preflight",
+        lambda self, url: preflights.append(url) or Path("s.json"),
+    )
+    with mutants.playwright_http(Config(), Factory) as http:
+        assert http("POST", "https://phub-a.cafitac.com/api/notes", {"text": "x"}) == (
+            201,
+            {"ok": True},
+        )
+        assert http("GET", "https://phub-a.cafitac.com/redirect", None)[0] == 302
+        assert http("GET", "https://phub-b.cafitac.com/x", None)[0] == 201
+    assert preflights == ["https://phub-a.cafitac.com/", "https://phub-b.cafitac.com/"]
+    assert all(kwargs["max_redirects"] == 0 for _, kwargs in fetched)

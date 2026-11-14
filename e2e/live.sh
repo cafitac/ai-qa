@@ -16,26 +16,27 @@ created_ok=0
 created_broken=0
 calls=0
 check() { .venv/bin/python e2e/check.py "$@"; }
-# Polls are bounded: down is asynchronous, so wait for the name to leave the list,
-# then for the inventory to report empty. Output is never printed.
-gone() {
-    tries=0
-    while [ "$tries" -lt 60 ]; do
-        if "$phub" list > "$work/list.json" 2>/dev/null &&
-            ! grep -Fq "\"$1\"" "$work/list.json"; then return 0; fi
-        tries=$((tries + 1))
-        sleep 5
-    done
-    return 1
+# down is asynchronous: poll until the name leaves the list, then until the inventory
+# is empty. Polls are bounded; exit 2 (bad request, missing binary) is not retried.
+# Output is never printed; AIQA_POLL_SECONDS only shortens the wait for tests.
+absent() {
+    rc=0
+    "$phub" list > "$work/list.json" 2>/dev/null || rc=$?
+    [ "$rc" -eq 0 ] || return "$rc"
+    ! grep -Fq "\"$1\"" "$work/list.json"
 }
-empty() {
-    tries=0
-    while [ "$tries" -lt 12 ]; do
-        "$phub" inventory "$1" --expect-empty > /dev/null 2>&1 && return 0
-        tries=$((tries + 1))
-        sleep 5
+drained() { "$phub" inventory "$1" --expect-empty > /dev/null 2>&1; }
+poll() {
+    tries=$1
+    shift
+    while :; do
+        rc=0
+        "$@" || rc=$?
+        [ "$rc" -ne 0 ] || return 0
+        tries=$((tries - 1))
+        { [ "$rc" -ne 2 ] && [ "$tries" -gt 0 ]; } || return 1
+        sleep "${AIQA_POLL_SECONDS:-5}"
     done
-    return 1
 }
 cleanup() {
     code=$?
@@ -44,7 +45,8 @@ cleanup() {
         name=${entry%:*}
         created=${entry##*:}
         [ "$created" -eq 1 ] || continue
-        if "$phub" down "$name" > /dev/null 2>&1 && gone "$name" && empty "$name"; then
+        if "$phub" down "$name" > /dev/null 2>&1 &&
+            poll 60 absent "$name" && poll 12 drained "$name"; then
             printf 'cleanup: %s absent inventory=empty\n' "$name"
         else
             printf 'cleanup FAILED: %s; owner must retry phub-remote down/inventory --expect-empty\n' "$name" >&2

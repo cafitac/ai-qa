@@ -123,7 +123,8 @@
             "enum": [
               "PASSED",
               "FAILED",
-              "SKIPPED"
+              "SKIPPED",
+              "BLOCKED"
             ]
           },
           "reason": {
@@ -135,7 +136,11 @@
               "no_evidence",
               "out_of_scope",
               "agent_error",
-              "assertion"
+              "assertion",
+              "environment",
+              "data",
+              "budget",
+              "unclassified"
             ]
           },
           "summary": {

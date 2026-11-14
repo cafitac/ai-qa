@@ -1,7 +1,10 @@
 """Offline checks of the live evidence assertions; no CLI or network calls."""
 
 import json
+import re
 import runpy
+import shlex
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -55,7 +58,7 @@ def test_success_assertions_reject_bad_evidence(tmp_path, failure):
         "summary": {"passed": 2, "failed": 0, "skipped": 0},
     }
     status = tmp_path / "status.json"
-    write(status, {"services": [{"service": "frontend", "commit_sha": "a" * 40}]})
+    write(status, {"services": [{"name": "frontend", "commit": "a" * 40}]})
     write(tmp_path / "report.json", report)
     CHECK("B1", tmp_path, status)
     if failure == "commit":
@@ -147,3 +150,65 @@ def test_live_run_pins_claude_and_reserves_before_invocation():
     assert '--config "$config" --agent claude "$@"' in run
     assert run.index('reserve "$(check reservation') < run.index("uv run aiqa run")
     assert "export AIQA_RUNS_DIR=" not in script
+
+
+def run_cleanup(tmp_path, list_present, inventory_rc):
+    """Run live.sh's own cleanup() against a fake phub-remote; returns rc, stderr, calls."""
+    script = (Path(__file__).parents[1] / "e2e/live.sh").read_text()
+    block = script.split("# down is asynchronous", 1)[1].split(
+        "\ntrap cleanup EXIT", 1
+    )[0]
+    log = tmp_path / "calls.log"
+    fake = tmp_path / "phub-remote"
+    fake.write_text(
+        '#!/bin/sh\necho "$*" >> "$LOG"\n'
+        "case $1 in\n"
+        '  list) n=$(grep -c "^list" "$LOG"); '
+        '[ "$n" -le "$PRESENT" ] && echo \'[{"name":"qa-ok-1"}]\' || echo \'[]\';;\n'
+        '  inventory) exit "$INV";;\n'
+        "esac\n"
+    )
+    fake.chmod(0o755)
+    driver = tmp_path / "driver.sh"
+    driver.write_text(
+        f"set -eu\nphub={shlex.quote(str(fake))}\nwork=$(mktemp -d)\nok=qa-ok-1\nbroken=qa-broken-1\n"
+        f"created_ok=1\ncreated_broken=0\ncalls=0\n# down{block}\ncleanup\n"
+    )
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "LOG": str(log),
+        "PRESENT": str(list_present),
+        "INV": str(inventory_rc),
+        "AIQA_POLL_SECONDS": "0",
+    }
+    done = subprocess.run(
+        ["sh", str(driver)], env=env, capture_output=True, text=True, check=False
+    )
+    return done.returncode, done.stderr, log.read_text().splitlines()
+
+
+def test_cleanup_waits_for_absence_then_empty_inventory(tmp_path):
+    code, stderr, calls = run_cleanup(tmp_path, list_present=2, inventory_rc=0)
+    assert code == 0 and stderr == ""
+    assert calls == [
+        "down qa-ok-1",
+        "list",
+        "list",
+        "list",
+        "inventory qa-ok-1 --expect-empty",
+    ]
+
+
+@pytest.mark.parametrize("inventory_rc,attempts", [(1, 12), (2, 1)])
+def test_cleanup_failure_is_bounded_and_reported(tmp_path, inventory_rc, attempts):
+    code, stderr, calls = run_cleanup(
+        tmp_path, list_present=0, inventory_rc=inventory_rc
+    )
+    assert code == 1 and "cleanup FAILED: qa-ok-1" in stderr
+    assert calls.count("inventory qa-ok-1 --expect-empty") == attempts
+
+
+def test_live_creates_environments_with_one_hour_ttl():
+    script = (Path(__file__).parents[1] / "e2e/live.sh").read_text()
+    assert len(re.findall(r'"\$phub" up "\$\w+" .*--ttl "?1h"?', script)) == 2
+    assert "PHUB_SSH_OPTS" not in script and "scripts/phub-remote" in script

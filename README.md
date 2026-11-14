@@ -177,9 +177,15 @@ Scenario data is sent as UTF-8 JSON inside an escaped fence. K3 agent checks use
 The owner must already have run `uv run aiqa login`. From this checkout:
 
 ```sh
-PREVIEW_HUB_DIR="$HOME/Project/cafitac/preview-hub" \
-  PHUB_SSH_OPTS="-o BatchMode=yes" AIQA_CALL_CAP=30 sh e2e/live.sh
+PREVIEW_HUB_DIR="$HOME/Project/cafitac/portfolio/preview-hub" \
+  AIQA_CALL_CAP=30 sh e2e/live.sh
 ```
+
+The script drives preview-hub `scripts/phub-remote` (Cloudflare Access through
+`cloudflared access curl`, so a valid Access session and `cloudflared` are
+required). Environments are created with `up --set svc=ref --ttl 1h` and awaited
+with `wait-ready` (READY with every service healthy, 600 seconds); its descriptor
+supplies the commits checked in B1.
 
 This MacBook script checks doctor, refuses a missing environment (B3), creates
 main and broken-backend environments (B1/B2), validates reports, final screenshots
@@ -197,8 +203,9 @@ reservation of pinned scenarios + retries, or 1 + retries for the `--only` run.
 It counts direct scenario attempt directories as calls. `AIQA_CALL_CAP` defaults
 to 30 and covers this invocation; the operator must also respect the sprint-wide
 remaining allowance. It never prints command output containing agent text or
-credentials. A trap deletes both test environments and asserts empty inventories;
-cleanup failure is an error requiring the owner to retry. Evidence remains under
+credentials. A trap runs `down` for both test environments, polls `list` until each name is
+absent, then requires `inventory --expect-empty`; cleanup failure is an error
+requiring the owner to retry. Evidence remains under
 the configured runs directory, including on failure. The script creates/deletes preview environments
 and makes real subscription agent calls; unit tests do neither.
 

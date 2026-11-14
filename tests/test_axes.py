@@ -108,3 +108,33 @@ def test_aliases_scopes_and_unsupported_values(tmp_path: Path) -> None:
     assert sum(c["subject"] == "GET /" for c in out) == 2  # same path, two routers
     assert {("error_response", "GET / 403"), ("error_response", "GET / 404")} <= set(by)
     assert sum(c["kind"] == "transition" for c in out) == 2
+
+
+def test_round5_gaps_api_route_security_dupes_limits_opts_status(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "app.py").write_text(
+        "from fastapi import FastAPI, APIRouter, Security, HTTPException\n"
+        "from pydantic import Field\napp = FastAPI()\nopts = {}\nr = APIRouter(**opts)\n"
+        "@app.api_route('/m', methods=['get', 'POST'],\n"
+        "               dependencies=[Security(get_user, scopes=['a:read'])])\n"
+        "def m(): raise HTTPException(2**70)\n"
+        "@r.get('/o')\ndef o(): ...\n"
+        "class M:\n n: int = Field(multiple_of=5, max_digits=7, decimal_places=2)\n"
+        " s: str = Field(regex='^a', min_items=1, max_items=2)\n"
+        "TRANSITIONS = {'a': ['x'], 'a': ['y'], 'b': ['z']}\n"
+    )
+    out = extract_axes(tmp_path)["cells"]
+    by = {(c["kind"], c["subject"]): c.get("detail") for c in out}
+    assert {("route", "GET /m"), ("route", "POST /m")} <= set(by)
+    assert by[("role_check", "POST /m requires get_user")] == {"scopes": ["a:read"]}
+    assert by[("error_response", "GET /m None")] == {"status": None}
+    assert by[("route", "GET /o")] == {"prefix": "unresolved"}
+    assert by[("constraint", "M.n")] == {
+        "multiple_of": 5,
+        "max_digits": 7,
+        "decimal_places": 2,
+    }
+    assert by[("constraint", "M.s")] == {"regex": "^a", "min_items": 1, "max_items": 2}
+    edges = {s for k, s in by if k == "transition"}
+    assert edges == {"TRANSITIONS: 'a' -> 'y'", "TRANSITIONS: 'b' -> 'z'"}

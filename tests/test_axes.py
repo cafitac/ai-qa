@@ -120,9 +120,14 @@ def test_round5_gaps_api_route_security_dupes_limits_opts_status(
         "               dependencies=[Security(get_user, scopes=['a:read'])])\n"
         "def m(): raise HTTPException(2**70)\n"
         "@r.get('/o')\ndef o(): ...\n"
+        "app2 = FastAPI(**opts)\n@app2.get('/f')\ndef f(): ...\n"
+        "@app.api_route('/n', methods=None,\n"
+        "               dependencies=[Security(get_user, scopes=['x']), Security(get_user, scopes=['y'])])\n"
+        "def n(): ...\n"
+        "@app.api_route('/k', **{'methods': ['POST']})\ndef k(): ...\n"
         "class M:\n n: int = Field(multiple_of=5, max_digits=7, decimal_places=2)\n"
         " s: str = Field(regex='^a', min_items=1, max_items=2)\n"
-        "TRANSITIONS = {'a': ['x'], 'a': ['y'], 'b': ['z']}\n"
+        "TRANSITIONS = {'a': ['x'], 'a': ['y'], 'b': ['z'], nx(): ['p'], nx(): ['q']}\n"
     )
     out = extract_axes(tmp_path)["cells"]
     by = {(c["kind"], c["subject"]): c.get("detail") for c in out}
@@ -137,4 +142,10 @@ def test_round5_gaps_api_route_security_dupes_limits_opts_status(
     }
     assert by[("constraint", "M.s")] == {"regex": "^a", "min_items": 1, "max_items": 2}
     edges = {s for k, s in by if k == "transition"}
-    assert edges == {"TRANSITIONS: 'a' -> 'y'", "TRANSITIONS: 'b' -> 'z'"}
+    assert edges == {f"TRANSITIONS: {e}" for e in ("'a' -> 'y'", "'b' -> 'z'")} | {
+        "TRANSITIONS: nx() -> 'p'",
+        "TRANSITIONS: nx() -> 'q'",
+    }
+    assert ("route", "GET /f") in by and by[("route", "GET /f")] is None  # no prefix
+    assert by[("role_check", "GET /n requires get_user")] == {"scopes": ["x", "y"]}
+    assert not any(s.endswith(" /k") for k, s in by if k == "route")

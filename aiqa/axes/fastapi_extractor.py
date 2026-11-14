@@ -95,13 +95,16 @@ def _deps(*parts: ast.AST) -> list[tuple[ast.expr, ast.Call]]:
     return [(d, c) for d, c in found if d is not None]
 
 
-def _ident(key: ast.expr) -> Any:  # dict keys that are equal in Python collapse
+def _ident(key: ast.expr) -> Any:  # only statically equal dict keys collapse
     value = _lit(key)
     try:
         hash(value)
     except TypeError:
         value = None
-    return ("src", ast.unparse(key)) if value is None else ("lit", value)
+    if value is not None:
+        return ("lit", value)
+    named = isinstance(key, ast.Name | ast.Attribute)
+    return ("src", ast.unparse(key)) if named else ("id", id(key))
 
 
 def _strs(node: ast.AST | None) -> list[str] | None:
@@ -115,9 +118,10 @@ def _verbs(dec: ast.Call, attr: str) -> list[str]:
     if attr in METHODS:
         return [attr.upper()]
     given = _kw(dec, "methods")  # api_route: FastAPI defaults to GET
-    return sorted(
-        {m.upper() for m in (["GET"] if given is None else _strs(given) or [])}
-    )
+    if given is None and any(k.arg is None for k in dec.keywords):
+        return []  # **opts may carry the methods
+    unset = given is None or (isinstance(given, ast.Constant) and given.value is None)
+    return sorted({m.upper() for m in (["GET"] if unset else _strs(given) or [])})
 
 
 class _Scan(ast.NodeVisitor):
@@ -151,8 +155,9 @@ class _Scan(ast.NodeVisitor):
         ctor = self.imported.get(_name(value), _name(value))
         if isinstance(value, ast.Call) and ctor in {"APIRouter", "FastAPI"}:
             prefix = _kw(value, "prefix")  # None stays "unresolved" if not a literal
-            if prefix is None and not any(k.arg is None for k in value.keywords):
-                resolved: str | None = ""  # **opts may carry a prefix
+            opts = ctor == "APIRouter" and any(k.arg is None for k in value.keywords)
+            if prefix is None and not opts:
+                resolved: str | None = ""  # APIRouter(**opts) may carry a prefix
             else:
                 resolved = _str(prefix)
             self.prefixes.update({n: resolved for n in names})
@@ -246,20 +251,21 @@ class _Scan(ast.NodeVisitor):
                         routes.append((route, f"{recv}:", dec))
                         self.add(node, "route", route, f"{recv}:", **note)
         for route, ns, dec in routes:
+            found = dict[str, set[str]]()  # role -> scopes of every Security use
             for dep, call in _deps(dec, node.args):
                 if not AUTH.search(_name(dep)):
                     continue
-                scopes = (
-                    _strs(_kw(call, "scopes")) if _name(call) == "Security" else None
-                )
-                note = {} if scopes is None else {"scopes": scopes}
+                scopes = _strs(_kw(call, "scopes")) if _name(call) == "Security" else []
                 vals = (
                     [*dep.args, *(k.value for k in dep.keywords)]
                     if isinstance(dep, ast.Call)
                     else []
                 )
                 for role in [s for a in vals if (s := _str(a))] or [_name(dep)]:
-                    self.add(node, "role_check", f"{route} requires {role}", ns, **note)
+                    found.setdefault(role, set()).update(scopes or [])
+            for role, scopes in found.items():
+                note = {"scopes": sorted(scopes)} if scopes else {}
+                self.add(node, "role_check", f"{route} requires {role}", ns, **note)
         owners = [(r, ns) for r, ns, _ in routes] or [(qualified, "")]
         self._scoped(node, node.name, owners)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime
@@ -56,8 +57,15 @@ def main(
     gate.add_argument("--design", type=Path, required=True)
     gate.add_argument("--scenarios", type=Path)
     gate.add_argument("--format", choices=["json", "text"], default="json")
+    axes = commands.add_parser("axes")
+    axes.add_argument("repo", type=Path)
     args = parser.parse_args(argv)
     try:
+        if args.command == "axes":
+            from .axes import extract_axes
+
+            print(json.dumps(extract_axes(args.repo)))
+            return 0
         if args.command == "design":
             from .design import run_check
 

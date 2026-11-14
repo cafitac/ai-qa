@@ -99,6 +99,24 @@ Scenario files may use `apiVersion: ai-qa/v2`, which adds the optional `ac`,
 (`skeleton|generated|critic|golden`) and `data` fields; `ai-qa/v1` files stay
 valid and run unchanged (v1 files may not carry the v2 fields).
 
+## Observed axes
+
+`aiqa axes <repo-path>` statically reads a repository (Python `ast` only: nothing
+is imported, run or fetched) and prints JSON `ai-qa/axes/v1` with `axes`
+(`observed` or `unknown`), `extractor` and `cells`. The FastAPI extractor emits
+observed cells (`source: observed`, `platform: web`, a qa-design `axis`) for
+routes, role dependencies, enums and transition tables, pydantic validators and
+field limits, environment feature flags and `HTTPException` responses. Each cell
+has a stable `key`, `kind`, `subject`, `file`, `line` and optional `detail`. An
+unsupported stack prints `axes: unknown` and exits 0; a missing path exits 2.
+Routes are read only on routers and apps constructed in the same module (matched
+by variable name: rebinding, attribute chains and shadowing parameters are not
+resolved), and only a router's own `prefix` applies; a non-literal prefix is
+marked `detail.prefix: unresolved`. Not read: `include_router` prefixes,
+router-level dependencies, `Query`/`Path`/`Annotated[...]` limits (class-body
+`Field(...)` limits only), import aliases other than the router constructors,
+and `_ignore_` enum contents. Dependencies are matched by name.
+
 ## Reading a report
 
 Runs are stored in `runs/<environment>-<UTC timestamp>/`: atomic `run.json`, per-scenario `result.json`, transcripts, `summary.md`, and a schema-validated preview-hub report on completion only. Existing run ids are refused. `show` views a CREATED, PREFLIGHT, or RUNNING run with a dead pid as INTERRUPTED without rewriting history. A COMPLETED run without a valid `report.json` is shown in progress (exit 5) only while another runner process is live, and INTERRUPTED (exit 4) otherwise. Recovery computes the terminal view without PID liveness, so failed recovery writes never label the finished runner RUNNING.

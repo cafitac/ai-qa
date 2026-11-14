@@ -42,7 +42,7 @@ def check_run(mode, root, status=None):
     assert results[seed]["status"] == "PASSED"
     assert results[add]["status"] == ("PASSED" if mode == "B1" else "FAILED")
     if mode == "B1":
-        commits = {s["service"]: s["commit_sha"] for s in read(status)["services"]}
+        commits = {s["name"]: s["commit"] for s in read(status)["services"]}
         assert report["commits"] == commits
         for scenario in scenarios.values():
             assert any(
@@ -63,11 +63,7 @@ def check_run(mode, root, status=None):
 
 def main():
     mode, *args = sys.argv[1:]
-    if mode == "ready":
-        assert read(args[0])["state"] == "READY"
-    elif mode == "empty":
-        assert all(not value for value in read(args[0]).values())
-    elif mode == "config":
+    if mode == "config":
         import yaml
 
         from aiqa.contracts import Config

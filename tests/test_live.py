@@ -55,7 +55,7 @@ def test_success_assertions_reject_bad_evidence(tmp_path, failure):
         "summary": {"passed": 2, "failed": 0, "skipped": 0},
     }
     status = tmp_path / "status.json"
-    write(status, {"services": [{"service": "frontend", "commit_sha": "a" * 40}]})
+    write(status, {"services": [{"name": "frontend", "commit": "a" * 40}]})
     write(tmp_path / "report.json", report)
     CHECK("B1", tmp_path, status)
     if failure == "commit":
@@ -147,3 +147,16 @@ def test_live_run_pins_claude_and_reserves_before_invocation():
     assert '--config "$config" --agent claude "$@"' in run
     assert run.index('reserve "$(check reservation') < run.index("uv run aiqa run")
     assert "export AIQA_RUNS_DIR=" not in script
+
+
+def test_live_uses_phub_remote_with_bounded_cleanup():
+    script = (Path(__file__).parents[1] / "e2e/live.sh").read_text()
+    assert "scripts/phub-remote" in script and "PHUB_SSH_OPTS" not in script
+    assert script.count("--ttl 1h") == 2 and script.count(' up "$') == 2
+    assert 'wait-ready "$1" --timeout 600' in script
+    cleanup = script.split("cleanup() {", 1)[1].split("\n}\n", 1)[0]
+    assert cleanup.index('down "$name"') < cleanup.index('gone "$name"')
+    assert cleanup.index('gone "$name"') < cleanup.index('empty "$name"')
+    assert '"$1" --expect-empty' in script.split("empty() {", 1)[1]
+    modes = (Path(__file__).parents[1] / "e2e/check.py").read_text()
+    assert 'mode == "ready"' not in modes and 'mode == "empty"' not in modes

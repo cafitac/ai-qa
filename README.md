@@ -102,17 +102,15 @@ valid and run unchanged (v1 files may not carry the v2 fields).
 ## Observed axes
 
 `aiqa axes <repo-path>` statically reads a repository (Python `ast` only: nothing
-is imported, executed or fetched) and prints JSON `ai-qa/axes/v1`: `axes`
+is imported, run or fetched) and prints JSON `ai-qa/axes/v1` with `axes`
 (`observed` or `unknown`), `extractor` and `cells`. The FastAPI extractor emits
-observed cells (`source: observed`, `platform: web`, an `axis` from the QA design
-enum) for routes (`flow`), role/permission dependencies (`permission`), enums and
-transition tables (`state`), pydantic validators and field limits (`validation`),
-environment feature flags (`flag`) and `HTTPException` responses (`empty_error`).
-Each cell has a stable `key`, `kind`, `subject`, `file`, `line` and optional
-`detail`; `id`, `req`, `scope`, `risk` and `expected` are set when a cell enters a
-design. An unsupported stack prints `axes: unknown` with no cells and exits 0;
-a missing path exits 2. Limits: routers included from other modules do not add
-their prefix, and dependencies are matched by name.
+observed cells (`source: observed`, `platform: web`, a qa-design `axis`) for
+routes, role dependencies, enums and transition tables, pydantic validators and
+field limits, environment feature flags and `HTTPException` responses. Each cell
+has a stable `key`, `kind`, `subject`, `file`, `line` and optional `detail`; a
+design assigns `id`, `req`, `scope`, `risk` and `expected`. An unsupported stack
+prints `axes: unknown` and exits 0; a missing path exits 2. Routers included from
+another module do not add their prefix; dependencies are matched by name.
 
 ## Reading a report
 

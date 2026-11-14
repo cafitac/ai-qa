@@ -18,6 +18,16 @@ LIMITS = {"min_length", "max_length", "ge", "gt", "le", "lt", "pattern"}
 VALIDATORS = {"field_validator", "validator", "model_validator", "root_validator"}
 ENUMS = {"Enum", "StrEnum", "IntEnum", "Flag", "IntFlag"}
 ENV = {"os.getenv", "getenv", "os.environ.get", "environ.get"}
+AXES = {
+    "route": "flow",
+    "role_check": "permission",
+    "enum": "state",
+    "transition": "state",
+    "validator": "validation",
+    "constraint": "validation",
+    "feature_flag": "flag",
+    "error_response": "empty_error",
+}
 Func = ast.FunctionDef | ast.AsyncFunctionDef
 
 
@@ -57,10 +67,18 @@ class _Scan(ast.NodeVisitor):
         self.owners, self.scopes = list[str](), list[str]()
         self.prefixes, self.gates = dict[str, str](), set[int]()
 
-    def add(self, node: ast.AST, axis: str, kind: str, subject: str, **detail: Any):
+    def add(self, node: ast.AST, kind: str, subject: str, **detail: Any) -> None:
         key = f"{self.rel}::{kind}:{subject}"
         self.cells.append(
-            Cell(key, axis, kind, subject, self.rel, getattr(node, "lineno", 0), detail)
+            Cell(
+                key,
+                AXES[kind],
+                kind,
+                subject,
+                self.rel,
+                getattr(node, "lineno", 0),
+                detail,
+            )
         )
 
     def visit_Assign(self, node: ast.Assign) -> None:
@@ -81,7 +99,7 @@ class _Scan(ast.NodeVisitor):
                     continue
                 for end in many:
                     src, dst = (_name(x) or ast.unparse(x) for x in (key, end))
-                    self.add(node, "state", "transition", f"{names[0]}: {src} -> {dst}")
+                    self.add(node, "transition", f"{names[0]}: {src} -> {dst}")
         self.generic_visit(node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
@@ -93,7 +111,7 @@ class _Scan(ast.NodeVisitor):
                 for t in s.targets
                 if isinstance(t, ast.Name)
             ]
-            self.add(node, "state", "enum", node.name, values=members)
+            self.add(node, "enum", node.name, values=members)
         for s in node.body:
             call = s.value if isinstance(s, ast.AnnAssign) else None
             limits = (
@@ -104,7 +122,6 @@ class _Scan(ast.NodeVisitor):
             if limits and isinstance(s, ast.AnnAssign):
                 self.add(
                     s,
-                    "validation",
                     "constraint",
                     f"{node.name}.{ast.unparse(s.target)}",
                     **limits,
@@ -120,13 +137,7 @@ class _Scan(ast.NodeVisitor):
             if not isinstance(dec, ast.Call):
                 continue
             if _name(dec) in VALIDATORS:
-                self.add(
-                    node,
-                    "validation",
-                    "validator",
-                    qualified,
-                    fields=[s for a in dec.args if (s := _str(a))],
-                )
+                self.add(node, "validator", qualified)
             elif (
                 isinstance(dec.func, ast.Attribute)
                 and dec.func.attr in METHODS
@@ -135,7 +146,7 @@ class _Scan(ast.NodeVisitor):
             ):
                 prefix = self.prefixes.get(_name(dec.func.value), "")
                 route = f"{dec.func.attr.upper()} {prefix}{path}"
-                self.add(node, "flow", "route", route, handler=qualified)
+                self.add(node, "route", route)
         if route:
             for call in (
                 c for p in [*node.decorator_list, node.args] for c in ast.walk(p)
@@ -150,13 +161,7 @@ class _Scan(ast.NodeVisitor):
                 if dep and AUTH.search(_name(dep)):
                     roles = [s for a in getattr(dep, "args", []) if (s := _str(a))]
                     for role in roles or [_name(dep)]:
-                        self.add(
-                            node,
-                            "permission",
-                            "role_check",
-                            f"{route} requires {role}",
-                            dependency=_name(dep),
-                        )
+                        self.add(node, "role_check", f"{route} requires {role}")
         self.owners.append(route or qualified)
         self.scopes.append(node.name)
         self.generic_visit(node)
@@ -165,13 +170,11 @@ class _Scan(ast.NodeVisitor):
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
-    def visit_If(self, node: ast.If | ast.IfExp) -> None:
+    def visit_If(self, node: ast.If) -> None:
         self.gates.add(
             id(node.test.value if isinstance(node.test, ast.NamedExpr) else node.test)
         )
         self.generic_visit(node)
-
-    visit_IfExp = visit_If
 
     def visit_Raise(self, node: ast.Raise) -> None:
         exc = node.exc
@@ -180,14 +183,7 @@ class _Scan(ast.NodeVisitor):
                 _kw(exc, "status_code") or (exc.args[0] if exc.args else None)
             )
             owner = self.owners[-1] if self.owners else self.rel
-            self.add(
-                node,
-                "empty_error",
-                "error_response",
-                f"{owner} {status}",
-                status=status,
-                message=_str(_kw(exc, "detail")),
-            )
+            self.add(node, "error_response", f"{owner} {status}", status=status)
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
@@ -197,7 +193,7 @@ class _Scan(ast.NodeVisitor):
             and var
             and (FLAG.search(var) or id(node) in self.gates)
         ):
-            self.add(node, "flag", "feature_flag", var)
+            self.add(node, "feature_flag", var)
         self.generic_visit(node)
 
 

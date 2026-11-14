@@ -11,11 +11,7 @@ API_VERSION = "ai-qa/axes/v1"
 
 @dataclass(frozen=True)
 class Cell:
-    """An observed matrix cell: what the code does, never what it should do.
-
-    `key` is stable across runs; `id`, `req`, `scope` and `risk` are assigned
-    when a cell enters a QA design (the `MatrixCell` shape of qa-design/1).
-    """
+    """What the code does, never what it should do; `key` is stable across runs."""
 
     key: str
     axis: str

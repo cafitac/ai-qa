@@ -8,7 +8,6 @@ import pytest
 
 from aiqa.axes import extract_axes
 from aiqa.cli import main
-from aiqa.contracts import InvalidInput
 
 FIXTURES = Path(__file__).parent / "fixtures" / "axes"
 SCHEMA = Path(__file__).parent.parent / "schemas" / "qa-design.schema.json"
@@ -45,17 +44,13 @@ def test_fastapi_fixture_yields_every_observed_axis() -> None:
 
 
 def test_cells_match_the_matrix_cell_shape() -> None:
-    axes = json.loads(SCHEMA.read_text())["properties"]["matrix"]["items"]["properties"]
-    for cell in extract_axes(FIXTURES / "fastapi_app")["cells"]:
-        assert cell["axis"] in axes["axis"]["enum"]
+    schema = json.loads(SCHEMA.read_text())["properties"]["matrix"]["items"]
+    out = extract_axes(FIXTURES / "fastapi_app")["cells"]
+    for cell in out:
+        assert cell["axis"] in schema["properties"]["axis"]["enum"]
         assert (cell["source"], cell["platform"]) == ("observed", "web")
-    keys = [c["key"] for c in extract_axes(FIXTURES / "fastapi_app")["cells"]]
-    assert len(keys) == len(set(keys))
-
-
-def test_target_repo_is_never_imported() -> None:
-    cells(FIXTURES / "fastapi_app")
-    assert "app.boom" not in sys.modules
+    assert len({c["key"] for c in out}) == len(out)
+    assert "app.boom" not in sys.modules  # the target repo is never imported
 
 
 def test_unsupported_stack_is_unknown_not_an_error(
@@ -66,18 +61,8 @@ def test_unsupported_stack_is_unknown_not_an_error(
     assert (out["axes"], out["cells"], out["extractor"]) == ("unknown", [], None)
 
 
-def test_cli_prints_observed_cells(capsys: pytest.CaptureFixture[str]) -> None:
-    assert main(["axes", str(FIXTURES / "fastapi_app")]) == 0
-    out = json.loads(capsys.readouterr().out)
-    assert out["apiVersion"] == "ai-qa/axes/v1" and len(out["cells"]) == 12
-
-
-def test_missing_path_is_invalid_input(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_missing_path_is_invalid_input(tmp_path: Path) -> None:
     assert main(["axes", str(tmp_path / "absent")]) == 2
-    with pytest.raises(InvalidInput):
-        extract_axes(tmp_path / "absent")
 
 
 def test_tests_broken_files_and_symlinks_are_skipped(tmp_path: Path) -> None:

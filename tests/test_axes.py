@@ -125,6 +125,7 @@ def test_api_route_scopes_dup_keys_limits_opts_and_status_bounds(
         "               dependencies=[Security(get_user, scopes=['x']), Security(get_user, scopes=['y'])])\n"
         "def n(): ...\n"
         "@app.api_route('/k', **{'methods': ['POST']})\ndef k(): ...\n"
+        "@app.api_route('/d')\ndef d(): ...\n"
         "class M:\n n: int = Field(multiple_of=5, max_digits=7, decimal_places=2)\n"
         " s: str = Field(regex='^a', min_items=1, max_items=2)\n"
         "TRANSITIONS = {'a': ['x'], 'a': ['y'], 'b': ['z'], nx(): ['p'], nx(): ['q'], S.n: ['r'], S.n: ['s'], None: ['o'], None: ['n']}\n"
@@ -152,3 +153,4 @@ def test_api_route_scopes_dup_keys_limits_opts_and_status_bounds(
     assert ("route", "GET /f") in by and by[("route", "GET /f")] is None  # no prefix
     assert by[("role_check", "GET /n requires get_user")] == {"scopes": ["x", "y"]}
     assert not any(s.endswith(" /k") for k, s in by if k == "route")
+    assert ("route", "GET /d") in by and ("route", "POST /d") not in by

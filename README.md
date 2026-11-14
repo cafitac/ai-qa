@@ -99,6 +99,21 @@ Scenario files may use `apiVersion: ai-qa/v2`, which adds the optional `ac`,
 (`skeleton|generated|critic|golden`) and `data` fields; `ai-qa/v1` files stay
 valid and run unchanged (v1 files may not carry the v2 fields).
 
+## Observed axes
+
+`aiqa axes <repo-path>` statically reads a repository (Python `ast` only: nothing
+is imported, executed or fetched) and prints JSON `ai-qa/axes/v1`: `axes`
+(`observed` or `unknown`), `extractor` and `cells`. The FastAPI extractor emits
+observed cells (`source: observed`, `platform: web`, an `axis` from the QA design
+enum) for routes (`flow`), role/permission dependencies (`permission`), enums and
+transition tables (`state`), pydantic validators and field limits (`validation`),
+environment feature flags (`flag`) and `HTTPException` responses (`empty_error`).
+Each cell has a stable `key`, `kind`, `subject`, `file`, `line` and optional
+`detail`; `id`, `req`, `scope`, `risk` and `expected` are set when a cell enters a
+design. An unsupported stack prints `axes: unknown` with no cells and exits 0;
+a missing path exits 2. Limits: routers included from other modules do not add
+their prefix, and dependencies are matched by name.
+
 ## Reading a report
 
 Runs are stored in `runs/<environment>-<UTC timestamp>/`: atomic `run.json`, per-scenario `result.json`, transcripts, `summary.md`, and a schema-validated preview-hub report on completion only. Existing run ids are refused. `show` views a CREATED, PREFLIGHT, or RUNNING run with a dead pid as INTERRUPTED without rewriting history. A COMPLETED run without a valid `report.json` is shown in progress (exit 5) only while another runner process is live, and INTERRUPTED (exit 4) otherwise. Recovery computes the terminal view without PID liveness, so failed recovery writes never label the finished runner RUNNING.

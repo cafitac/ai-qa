@@ -109,8 +109,10 @@ routes, role dependencies, enums and transition tables, pydantic validators and
 field limits, environment feature flags and `HTTPException` responses. Each cell
 has a stable `key`, `kind`, `subject`, `file`, `line` and optional `detail`. An
 unsupported stack prints `axes: unknown` and exits 0; a missing path exits 2.
-Routes are read only on routers and apps constructed in the same module, and only
-a router's own `prefix` applies. Not read: `include_router` prefixes,
+Routes are read only on routers and apps constructed in the same module (matched
+by variable name: rebinding, attribute chains and shadowing parameters are not
+resolved), and only a router's own `prefix` applies; a non-literal prefix is
+marked `detail.prefix: unresolved`. Not read: `include_router` prefixes,
 router-level dependencies, `Query`/`Path`/`Annotated[...]` limits (class-body
 `Field(...)` limits only), import aliases other than the router constructors,
 and `_ignore_` enum contents. Dependencies are matched by name.

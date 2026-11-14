@@ -82,8 +82,8 @@ def _deps(*parts: ast.AST) -> list[ast.expr]:
 class _Scan(ast.NodeVisitor):
     def __init__(self, rel: str, tree: ast.AST) -> None:
         self.rel, self.cells = rel, list[Cell]()
-        self.owners, self.scopes = list[list[str]](), list[str]()
-        self.prefixes, self.gates = dict[str, str](), set[int]()
+        self.owners, self.scopes = list[list[tuple[str, str]]](), list[str]()
+        self.prefixes, self.gates = dict[str, str | None](), set[int]()
         nodes = list(ast.walk(tree))
         mods = [a.name for n in nodes if isinstance(n, ast.Import) for a in n.names]
         mods += [
@@ -99,15 +99,20 @@ class _Scan(ast.NodeVisitor):
             for a in n.names
         }
 
-    def add(self, node: ast.AST, kind: str, subject: str, **detail: Any) -> None:
-        key = f"{self.rel}::{kind}:{subject}"
+    def add(
+        self, node: ast.AST, kind: str, subject: str, ns: str = "", **detail: Any
+    ) -> None:
+        key = f"{self.rel}::{kind}:{ns}{subject}"
         line = getattr(node, "lineno", 0)
         self.cells.append(Cell(key, AXES[kind], kind, subject, self.rel, line, detail))
 
     def _bind(self, names: list[str], value: ast.expr, node: ast.stmt) -> None:
         ctor = self.imported.get(_name(value), _name(value))
         if isinstance(value, ast.Call) and ctor in {"APIRouter", "FastAPI"}:
-            self.prefixes.update({n: _str(_kw(value, "prefix")) or "" for n in names})
+            prefix = _kw(value, "prefix")  # None stays "unresolved" if not a literal
+            self.prefixes.update(
+                {n: "" if prefix is None else _str(prefix) for n in names}
+            )
         if isinstance(value, ast.Dict) and "transition" in "".join(names).lower():
             table = ".".join([*self.scopes, names[0]])
             for key, ends in zip(value.keys, value.values):
@@ -119,7 +124,7 @@ class _Scan(ast.NodeVisitor):
                 if key is None:
                     continue
                 for end in many:
-                    src, dst = (_name(x) or ast.unparse(x) for x in (key, end))
+                    src, dst = ast.unparse(key), ast.unparse(end)
                     self.add(node, "transition", f"{table}: {src} -> {dst}")
 
     def visit_Assign(self, node: ast.Assign) -> None:
@@ -168,7 +173,7 @@ class _Scan(ast.NodeVisitor):
         self._scoped(node, node.name)
 
     def _scoped(
-        self, node: ast.AST, name: str, owners: list[str] | None = None
+        self, node: ast.AST, name: str, owners: list[tuple[str, str]] | None = None
     ) -> None:
         saved = dict(self.prefixes)
         self.scopes.append(name)
@@ -180,7 +185,7 @@ class _Scan(ast.NodeVisitor):
 
     def visit_FunctionDef(self, node: Func) -> None:
         qualified = ".".join([*self.scopes, node.name])
-        routes: list[tuple[str, ast.Call]] = []
+        routes: list[tuple[str, str, ast.Call]] = []
         for dec in node.decorator_list:
             if _name(dec) in VALIDATORS:
                 self.add(node, "validator", qualified)
@@ -192,15 +197,22 @@ class _Scan(ast.NodeVisitor):
                 recv = _name(dec.func.value)
                 path = _str(dec.args[0] if dec.args else _kw(dec, "path"))
                 if path is not None and recv in self.prefixes:
-                    route = f"{dec.func.attr.upper()} {self.prefixes[recv]}{path}"
-                    routes.append((route, dec))
-                    self.add(node, "route", route)
-        for route, dec in routes:
+                    prefix = self.prefixes[recv]
+                    route = f"{dec.func.attr.upper()} {prefix or ''}{path}"
+                    routes.append((route, f"{recv}:", dec))
+                    note = {} if prefix is not None else {"prefix": "unresolved"}
+                    self.add(node, "route", route, f"{recv}:", **note)
+        for route, ns, dec in routes:
             for dep in [d for d in _deps(dec, node.args) if AUTH.search(_name(d))]:
-                roles = [s for a in getattr(dep, "args", []) if (s := _str(a))]
-                for role in roles or [_name(dep)]:
-                    self.add(node, "role_check", f"{route} requires {role}")
-        self._scoped(node, node.name, [r for r, _ in routes] or [qualified])
+                vals = (
+                    [*dep.args, *(k.value for k in dep.keywords)]
+                    if isinstance(dep, ast.Call)
+                    else []
+                )
+                for role in [s for a in vals if (s := _str(a))] or [_name(dep)]:
+                    self.add(node, "role_check", f"{route} requires {role}", ns)
+        owners = [(r, ns) for r, ns, _ in routes] or [(qualified, "")]
+        self._scoped(node, node.name, owners)
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
@@ -216,12 +228,12 @@ class _Scan(ast.NodeVisitor):
             status = _status(
                 _kw(exc, "status_code") or (exc.args[0] if exc.args else None)
             )
-            for owner in self.owners[-1] if self.owners else [self.rel]:
-                self.add(node, "error_response", f"{owner} {status}", status=status)
+            for owner, ns in self.owners[-1] if self.owners else [(self.rel, "")]:
+                self.add(node, "error_response", f"{owner} {status}", ns, status=status)
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
-        var = _str(node.args[0]) if node.args else None
+        var = _str(node.args[0] if node.args else _kw(node, "key"))
         env = ast.unparse(node.func) in ENV
         if env and var and (FLAG.search(var) or id(node) in self.gates):
             self.add(node, "feature_flag", var)

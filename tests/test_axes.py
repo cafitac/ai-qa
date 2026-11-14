@@ -30,7 +30,11 @@ def test_fastapi_fixture_yields_every_observed_axis() -> None:
         ("empty_error", "error_response", f"{ship} 404"),
         ("empty_error", "error_response", f"{dispatch} 404"),
         ("state", "enum", "OrderState"),
-        ("state", "transition", "Payments.TRANSITIONS: NEW -> PAID"),
+        (
+            "state",
+            "transition",
+            "Payments.TRANSITIONS: OrderState.NEW -> OrderState.PAID",
+        ),
         ("validation", "validator", "OrderCreate.not_blank"),
         ("validation", "constraint", "OrderCreate.title"),
         ("flag", "feature_flag", "SHIP_MODE"),
@@ -73,20 +77,24 @@ def test_tests_broken_files_and_symlinks_are_skipped(tmp_path: Path) -> None:
 
 def test_aliases_scopes_and_unsupported_values(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text(
-        "from fastapi import FastAPI as API, HTTPException, status\n"
+        "from fastapi import FastAPI as API, HTTPException, status, Depends, APIRouter\n"
         "from enum import Enum\nfrom pydantic import Field\napp = API()\n"
         "class A:\n class S(Enum):\n  NEW = 1\n  _ignore_ = 'x'\n"
         "class B:\n class S(Enum):\n  OLD = 2\n"
         f"class M:\n n: int = Field(le=1e999, ge=1, gt=1{'0' * 400}, lt=-9223372036854775808)\n"
         "class V:\n @root_validator\n def r(cls, v): ...\n"
+        "PX = '/p'\npx = APIRouter(prefix=PX)\nra = APIRouter()\nrb = APIRouter()\n"
+        "@px.get('/q', dependencies=[Depends(require_role(role='admin'))])\ndef q(): ...\n"
+        "@ra.get('/')\ndef ra_(): raise HTTPException(403)\n"
+        "@rb.get('/')\ndef rb_(): raise HTTPException(404)\n"
+        "import os\nos.getenv(key='ENABLE_X')\n"
+        "TRANSITIONS = {A.N: [A.D], B.N: [B.D]}\n"
         "from hooks import hooks\n@hooks.get('created')\ndef h(): ...\n"
         "reg = {}\n@reg.get('y')\ndef y(): ...\n@app.get(path='/x')\n"
         "def x():\n raise HTTPException(status.HTTP_400_BAD_REQUEST + 1)\n"
     )
-    by = {
-        (c["kind"], c["subject"]): c.get("detail")
-        for c in extract_axes(tmp_path)["cells"]
-    }
+    out = extract_axes(tmp_path)["cells"]
+    by = {(c["kind"], c["subject"]): c.get("detail") for c in out}
     assert by[("enum", "A.S")] == {"values": ["NEW"]} and ("enum", "B.S") in by
     assert (
         by[("constraint", "M.n")] == {"ge": 1, "lt": -(2**63)}
@@ -94,4 +102,9 @@ def test_aliases_scopes_and_unsupported_values(tmp_path: Path) -> None:
     )
     assert by[("error_response", "GET /x None")] == {"status": None}
     assert ("route", "GET y") not in by and ("route", "GET created") not in by
-    assert ("validator", "V.r") in by
+    assert ("validator", "V.r") in by and ("feature_flag", "ENABLE_X") in by
+    assert by[("route", "GET /q")] == {"prefix": "unresolved"}
+    assert ("role_check", "GET /q requires admin") in by
+    assert sum(c["subject"] == "GET /" for c in out) == 2  # same path, two routers
+    assert {("error_response", "GET / 403"), ("error_response", "GET / 404")} <= set(by)
+    assert sum(c["kind"] == "transition" for c in out) == 2

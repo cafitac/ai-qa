@@ -111,7 +111,8 @@
         "mode": {
           "enum": [
             "session",
-            "service_token"
+            "service_token",
+            "auto"
           ]
         },
         "service_token_file": {

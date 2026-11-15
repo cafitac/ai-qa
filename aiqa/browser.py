@@ -258,6 +258,26 @@ class ServiceTokenPreflight(PlaywrightSession):
                     status = response.status
                     location = response.headers.get("location")
                     response.dispose()
+                    rejected = (
+                        "Cloudflare Access rejected the service token: check the Service Auth "
+                        "policy on the Access application and the Client ID/Secret"
+                    )
+                    if (
+                        status in (401, 403)
+                        and url_origin(current).lower() == entry_origin
+                    ):
+                        accepted = any(
+                            c.get("name") == "CF_Authorization"
+                            and c.get("domain", "").lstrip(".").lower() == entry_host
+                            for c in context.storage_state().get("cookies", [])
+                        )
+                        raise Refused(
+                            "login_required",
+                            "Cloudflare Access accepted the service token but the origin refused it "
+                            "(preview-hub service identity, P10)"
+                            if accepted
+                            else rejected,
+                        )
                     if status not in (301, 302, 303, 307, 308):
                         if status >= 400 or url_origin(current).lower() != entry_origin:
                             raise Refused(
@@ -270,6 +290,11 @@ class ServiceTokenPreflight(PlaywrightSession):
                             "login_required", "Service-token redirect limit exceeded"
                         )
                     current = urljoin(current, location)
+                    if (
+                        url_origin(current).lower()
+                        == f"https://{self.config.access_team_domain}".lower()
+                    ):
+                        raise Refused("login_required", rejected)
                     if url_origin(current).lower() not in (
                         entry_origin,
                         f"https://{self.config.access_team_domain}".lower(),
@@ -308,5 +333,9 @@ class ServiceTokenPreflight(PlaywrightSession):
                 save_state(path, state)
                 self.current_state = path
                 return path
+            except playwright_errors():
+                raise Refused(
+                    "login_required", "Service-token Access request failed"
+                ) from None
             finally:
                 context.dispose()

@@ -67,17 +67,14 @@ def test_service_exchange_origin_headers_and_state(tmp_path, http_only, mixed_ca
         def get(self, url, **kwargs):
             calls.append((url, kwargs))
             redirects = [
-                "https://TEAM.EXAMPLE/login"
+                "https://PHUB-DEMO.CAFITAC.COM/next"
                 if mixed_case
-                else "https://team.example/login",
-                "https://PHUB-DEMO.CAFITAC.COM/"
-                if mixed_case
-                else "https://phub-demo.cafitac.com/",
+                else "https://phub-demo.cafitac.com/next"
             ]
             index = len(calls) - 1
             return SimpleNamespace(
-                status=302 if index < 2 else 200,
-                headers={"location": redirects[index]} if index < 2 else {},
+                status=302 if index < 1 else 200,
+                headers={"location": redirects[index]} if index < 1 else {},
                 dispose=lambda: None,
             )
 
@@ -182,7 +179,7 @@ def test_run_id_file_and_prune(tmp_path, monkeypatch):
     assert storage.prune(1) == []
     assert storage.prune(0) == [run_id]
     assert unrelated.is_dir() and link.is_symlink()
-    assert Config.parse({"apiVersion": "ai-qa/v1"}, {}).access_mode == "session"
+    assert Config.parse({"apiVersion": "ai-qa/v1"}, {}).access_mode == "auto"
 
 
 @pytest.mark.parametrize("version", [None, "1.2.3", "0.0.83"])

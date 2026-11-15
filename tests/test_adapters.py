@@ -1796,3 +1796,60 @@ def test_doctor_access_flag_selects_service_token_mode(context, monkeypatch):
     assert main(["doctor", "--access", "service-token"]) == 0
     assert main(["doctor"]) == 0
     assert seen == ["service_token", "session"]
+
+
+@pytest.mark.parametrize("runner_type", [ClaudeCodeRunner, CodexRunner])
+def test_launcher_excludes_access_environment(context, monkeypatch, runner_type):
+    from aiqa.secrets import ENV_NAMES, RunSecrets
+
+    for name in ENV_NAMES:
+        monkeypatch.setenv(name, "synthetic-access-value-12345")
+    seen = []
+
+    def launcher(command, **kwargs):
+        assert all(name not in kwargs["env"] for name in ENV_NAMES)
+        seen.append(True)
+        return subprocess.Popen([sys.executable, "-c", "pass"], **kwargs)
+
+    runner = runner_type(Config(), launcher)
+    runner.secrets = RunSecrets()
+    runner.run(SCENARIO, context)
+    assert seen == [True]
+
+
+@pytest.mark.parametrize("session_present", [False, True])
+def test_doctor_auto_requires_session_and_sanitizes_probes(
+    context, monkeypatch, capsys, session_present
+):
+    from aiqa.cli import main
+    from aiqa.secrets import ENV_NAMES
+
+    for name in ENV_NAMES:
+        monkeypatch.setenv(name, "synthetic-access-value-12345")
+    monkeypatch.setenv("AIQA_TEST_CHILD_MARKER", "preserved")
+    monkeypatch.setattr("aiqa.doctor.access_source", lambda config: "keychain")
+    monkeypatch.setattr("aiqa.doctor.shutil.which", lambda name: "/fake/" + name)
+    calls = []
+
+    def execute(argv, **kwargs):
+        assert all(name not in kwargs["env"] for name in ENV_NAMES)
+        assert kwargs["env"]["AIQA_TEST_CHILD_MARKER"] == "preserved"
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout="1.2.3")
+
+    monkeypatch.setattr("aiqa.doctor.subprocess.run", execute)
+    if not session_present:
+        context.storage_state.unlink()
+    config = Config(access_mode="auto", state_file=context.storage_state)
+    monkeypatch.setattr(Config, "load", lambda path: config)
+    import aiqa.doctor as module
+
+    original = module.doctor
+    monkeypatch.setattr(
+        module, "doctor", lambda config: original(config, FakePlaywright)
+    )
+    assert main(["doctor"]) == int(not session_present)
+    output = capsys.readouterr().out
+    assert "service token: keychain" in output
+    assert f"access: {'session' if session_present else 'none'}" in output
+    assert len(calls) == 2

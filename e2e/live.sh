@@ -61,7 +61,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' HUP TERM
-if ! uv run aiqa doctor > "$work/doctor" 2>&1; then
+if ! uv run aiqa doctor --access session > "$work/doctor" 2>&1; then
     echo 'Doctor failed: owner must run uv run aiqa login and check CLI/browser dependencies.' >&2
     exit 3
 fi

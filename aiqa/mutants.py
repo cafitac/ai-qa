@@ -8,6 +8,7 @@ import argparse
 import json
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
@@ -239,6 +240,7 @@ def add_arguments(commands: Any) -> None:
         "--mutant", action="append", default=[], metavar="ID=DESCRIPTOR.json"
     )
     cmd.add_argument("--config", type=Path)
+    cmd.add_argument("--access", choices=["auto", "session", "service-token"])
 
 
 def run(args: argparse.Namespace, clock: Callable[[], datetime]) -> int:
@@ -269,7 +271,12 @@ def run(args: argparse.Namespace, clock: Callable[[], datetime]) -> int:
         if svc["name"] in names and svc["publicUrl"]
     }
     failures: dict[str, str] = {}
-    with playwright_http(Config.load(args.config), origins, failures) as http:
+    from .secrets import resolve_access
+
+    config = Config.load(args.config)
+    if args.access:
+        config = replace(config, access_mode=args.access.replace("-", "_"))
+    with playwright_http(resolve_access(config), origins, failures) as http:
         results = [
             validate_mutant(entries[n], baseline, given.get(n), ref, http, at)
             for n in (given or entries)

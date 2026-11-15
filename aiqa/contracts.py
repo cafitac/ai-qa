@@ -277,7 +277,7 @@ class Config:
                 raise ValueError("Invalid path")
             return cls(
                 **hub,
-                access_mode=d.get("access", {}).get("mode", "session"),
+                access_mode=d.get("access", {}).get("mode", "auto"),
                 service_token_file=Path(service_path).expanduser(),
                 claude_token_file=Path(claude_path).expanduser(),
                 agent_browser=browser,

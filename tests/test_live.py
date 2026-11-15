@@ -150,6 +150,11 @@ def test_live_run_pins_claude_and_reserves_before_invocation():
     assert '--config "$config" --agent claude "$@"' in run
     assert run.index('reserve "$(check reservation') < run.index("uv run aiqa run")
     assert "export AIQA_RUNS_DIR=" not in script
+    assert 'uv run aiqa doctor --access session > "$work/doctor"' in script
+    assert (
+        "Doctor failed: owner must run uv run aiqa login and check CLI/browser dependencies."
+        in script
+    )
 
 
 def run_cleanup(tmp_path, list_present, inventory_rc):

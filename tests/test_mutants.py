@@ -117,6 +117,30 @@ def test_live_defect_is_validated_with_evidence(entry, defect):
     )
 
 
+@pytest.mark.parametrize("prefix", ["/_svc/api", "/_svc/api/", ""])
+def test_requests_keep_the_public_url_path_prefix(prefix):
+    sent = []
+
+    def http(method, url, body):
+        sent.append(url)
+        return 201, {"text": "x"}
+
+    entry = mutant("m", "m-ref", post("x"))
+    mutants.validate_mutant(
+        entry,
+        env("base", "main", "base.test" + prefix),
+        env("mut", "m-ref", "mut.test" + prefix),
+        "main",
+        http,
+        NOW,
+    )
+    root = prefix.rstrip("/")
+    assert sent == [
+        f"https://base.test{root}/api/notes",
+        f"https://mut.test{root}/api/notes",
+    ]
+
+
 def test_defect_that_is_not_live_is_not_validated():
     result = check(ORDER)
     assert (result["validated"], result["check_ref"]) == (False, None)

@@ -61,6 +61,9 @@ def main(
     axes = commands.add_parser("axes")
     axes.add_argument("repo", type=Path)
     mutants.add_arguments(commands)
+    from .defects.cli import add_arguments
+
+    add_arguments(commands)
     args = parser.parse_args(argv)
     try:
         if args.command == "mutant":
@@ -70,6 +73,10 @@ def main(
 
             print(json.dumps(extract_axes(args.repo)))
             return 0
+        if args.command == "defect":
+            from .defects.cli import run as run_defect
+
+            return run_defect(args)
         if args.command == "design":
             from .design import run_check
 

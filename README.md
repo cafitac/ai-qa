@@ -271,3 +271,7 @@ once during run preflight, and only the ones the run uses: the service-token fil
 in service-token mode and the Claude token file for the Claude agent. Invalid files
 refuse the run with `login_required`.
 Prune reports invalid or unreadable run records as `skipped` and preserves them.
+
+## Defects
+
+`aiqa defect fingerprint|find|create|comment` is the contract a router uses; output is one JSON line. A fingerprint is sha256 over a normalization version, service/scenario, failure class, failed expectation index and the normalized observed text (never the commit). The GitHub sink is off unless `--enabled` is passed, names the writable repositories with `--grant-repo`, and only lists, creates and comments (issues labelled `aiqa-defect`, marker `<!-- aiqa-fp:<fingerprint> -->`). Exit 2 is invalid input, 3 a refusal (disabled, not granted, no push access), 4 a failed GitHub call. Find-then-create is not atomic: the caller serializes per fingerprint (agent-skills `qa_ledger.py route-defect` does, with a claim and lease).

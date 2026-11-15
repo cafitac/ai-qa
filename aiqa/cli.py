@@ -36,7 +36,7 @@ def main(
         help="fake is development-only: no browser or real agent",
     )
     run.add_argument("--config", type=Path)
-    run.add_argument("--access", choices=["session", "service-token"])
+    run.add_argument("--access", choices=["auto", "session", "service-token"])
     run.add_argument("--run-id-file", type=Path)
     prune = commands.add_parser("prune")
     prune.add_argument("--keep", type=int, required=True)
@@ -48,7 +48,7 @@ def main(
         command = commands.add_parser(name)
         command.add_argument("--config", type=Path)
     commands.choices["doctor"].add_argument(
-        "--access", choices=["session", "service-token"]
+        "--access", choices=["auto", "session", "service-token"]
     )
     design = commands.add_parser("design").add_subparsers(
         dest="design_command", required=True
@@ -91,6 +91,10 @@ def main(
             return 0
         if args.command in ("run", "doctor") and args.access:
             config = replace(config, access_mode=args.access.replace("-", "_"))
+        from .secrets import resolve_access
+
+        if args.command == "run":
+            config = resolve_access(config, descriptor=args.descriptor is not None)
         if args.command == "login":
             from .browser import PlaywrightSession
 

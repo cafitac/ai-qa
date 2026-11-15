@@ -16,10 +16,27 @@ configured override must also be an exact version.
 
 ## Login
 
+Store an Access service token in macOS Keychain (each command prompts for the value):
+
+```sh
+security add-generic-password -a client-id -s aiqa-cf-access -w
+security add-generic-password -a client-secret -s aiqa-cf-access -w
+```
+
+`--access auto` is the default: it selects a token from the environment pair
+`AIQA_CF_ACCESS_CLIENT_ID` / `AIQA_CF_ACCESS_CLIENT_SECRET` (CI override), then the
+configured JSON file, then Keychain; otherwise it uses the saved session.
+A token is used only with `--descriptor`: the hub dashboard serves descriptors to
+human sessions, so `auto` without `--descriptor` keeps the saved session
+(`--access service-token` without it is an error). `aiqa mutant validate` needs no
+descriptor, so `auto` uses a stored token there. Preview-hub must accept service
+identity (P10) before environment routes stop answering 401; until then pass
+`--access session` to `aiqa run` or `aiqa mutant validate` to keep the saved
+session. `uv run aiqa login` remains the session fallback.
+
 The owner runs `uv run aiqa login`, signs in to Cloudflare Access in the headed
 browser, then runs `uv run aiqa doctor`. Login requires HttpOnly Access cookies
-and saves `~/.config/aiqa/access-state.json` with mode 0600. Doctor checks session
-presence and permissions; run preflight checks whether it still works. Never
+and saves `~/.config/aiqa/access-state.json` with mode 0600. Doctor in auto mode requires a saved session with safe permissions and reports the available token source separately; run preflight checks whether it still works. Never
 copy session contents into scenario files or run directories. Only exact-host cookies (including Access cookies) and
 localStorage for the dashboard host, Access team domain, and `phub-*` environment
 hosts are stored; parent-domain cookies such as `.cafitac.com` and GitHub SSO
@@ -214,7 +231,7 @@ Unattended Access and container usage:
 ```yaml
 apiVersion: ai-qa/v1
 access:
-  mode: service_token # default: session
+  mode: auto # default; explicit service_token or session also supported
   service_token_file: /run/secrets/access_service_token.json
 agent:
   token_file: /run/secrets/claude_token

@@ -16,7 +16,7 @@ from typing import Any, cast
 from ..contracts import PLAYWRIGHT_MCP_PATTERN, Config, InvalidInput, Scenario
 from ..ports import AgentContext, AgentOutput
 from ..screenshots import is_screenshot
-from ..secrets import RunSecrets
+from ..secrets import RunSecrets, child_env
 from ..storage import below_directory
 
 TOOLS = tuple(
@@ -275,7 +275,7 @@ class ClaudeCodeRunner:
         return command
 
     def child_environment(self) -> dict[str, str]:
-        env = os.environ.copy()
+        env = child_env()
         secrets = (
             self.secrets if self.secrets is not None else RunSecrets.load(self.config)
         )

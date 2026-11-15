@@ -8,6 +8,7 @@ from typing import Any
 
 from .browser import playwright_errors, playwright_factory
 from .contracts import PLAYWRIGHT_MCP_PATTERN, Config
+from .secrets import access_source, child_env
 
 
 def dependency_errors(config: Config, agent: str | None = None) -> list[str]:
@@ -23,6 +24,11 @@ def dependency_errors(config: Config, agent: str | None = None) -> list[str]:
 
 
 def doctor(config: Config, factory: Callable[[], Any] = playwright_factory) -> int:
+    source = (
+        access_source(config)
+        if config.access_mode in ("auto", "service_token")
+        else None
+    )
     errors = dependency_errors(config)
     for error in errors:
         print(error)
@@ -40,6 +46,7 @@ def doctor(config: Config, factory: Callable[[], Any] = playwright_factory) -> i
                 text=True,
                 timeout=10,
                 check=False,
+                env=child_env(),
             )
             # Version output is untrusted: report only the numeric version.
             match = re.search(r"\b\d+\.\d+\.\d+\b", result.stdout)
@@ -75,7 +82,12 @@ def doctor(config: Config, factory: Callable[[], Any] = playwright_factory) -> i
     claude_present = config.claude_token_file.is_file()
     print(f"service token file: {str(service_present).lower()}")
     print(f"Claude token file: {str(claude_present).lower()}")
-    access_present = (
-        service_present if config.access_mode == "service_token" else present
+    print(
+        f"access: service token ({source})"
+        if source and config.access_mode == "service_token"
+        else f"access: {'session' if present and config.access_mode != 'service_token' else 'none'}"
     )
+    if config.access_mode == "auto":
+        print(f"service token: {source or 'none'}")
+    access_present = bool(source) if config.access_mode == "service_token" else present
     return int(missing or not installed or not access_present)

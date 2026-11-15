@@ -392,3 +392,39 @@ def test_transport_serializes_json_bodies_and_reports_an_unreachable_origin(
         sent[0]["headers"] == {"Content-Type": "application/json"}
         and "headers" not in sent[2]
     )
+
+
+def test_validate_access_session_overrides_auto_token(tmp_path, monkeypatch):
+    from aiqa.secrets import ENV_NAMES
+
+    for name in ENV_NAMES:
+        monkeypatch.setenv(name, "synthetic-access-value-12345")
+    monkeypatch.setattr(mutants.Config, "load", lambda path: Config(access_mode="auto"))
+    (tmp_path / "catalog.yaml").write_text(yaml.safe_dump(CATALOG))
+    (tmp_path / "baseline.json").write_text(
+        json.dumps(env("base", "main", "base.test").data)
+    )
+    seen = []
+
+    def http(config, origins, failures):
+        seen.append(config.access_mode)
+        return nullcontext(http_for({"base.test": App()}))
+
+    monkeypatch.setattr(mutants, "playwright_http", http)
+    assert (
+        cli_main(
+            [
+                "mutant",
+                "validate",
+                "--catalog",
+                str(tmp_path / "catalog.yaml"),
+                "--baseline",
+                str(tmp_path / "baseline.json"),
+                "--access",
+                "session",
+            ],
+            clock=lambda: NOW,
+        )
+        == 1
+    )
+    assert seen == ["session"]

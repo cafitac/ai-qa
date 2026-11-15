@@ -206,7 +206,9 @@ def validate_mutant(
     failure = None
     if not reasons:
         steps = entry["check"]["steps"]
-        urls = [url_origin(s["publicUrl"]) for s, _ in pairs if s]
+        urls = [
+            s["publicUrl"].rstrip("/") for s, _ in pairs if s
+        ]  # keep the proxy path prefix
         _, base_failure = run_steps(urls[0], steps, http)
         answered, failure = run_steps(urls[1], steps, http)
         if base_failure:

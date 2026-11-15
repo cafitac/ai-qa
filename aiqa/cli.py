@@ -58,6 +58,9 @@ def main(
     gate.add_argument("--design", type=Path, required=True)
     gate.add_argument("--scenarios", type=Path)
     gate.add_argument("--format", choices=["json", "text"], default="json")
+    skeleton = design.add_parser("skeleton")
+    skeleton.add_argument("--design", type=Path, required=True)
+    skeleton.add_argument("--out", type=Path)
     axes = commands.add_parser("axes")
     axes.add_argument("repo", type=Path)
     mutants.add_arguments(commands)
@@ -78,6 +81,10 @@ def main(
 
             return run_defect(args)
         if args.command == "design":
+            if args.design_command == "skeleton":
+                from .skeleton import run_skeleton
+
+                return run_skeleton(args.design, args.out)
             from .design import run_check
 
             return run_check(args.spec, args.design, args.scenarios, args.format)

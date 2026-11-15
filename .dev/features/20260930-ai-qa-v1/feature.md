@@ -235,6 +235,29 @@ Given a READY preview-hub environment, one command runs natural-language E2E sce
 - Normalized value: for QU2 only — fix the finding, run one more review cycle (cycle 8); merge if neither reviewer reports a HIGH or MEDIUM finding and CI is green on the exact head; new LOW findings become required QU4 work items.
 - Confirmed at: 2026-10-01
 
+### QD11: Q3 direction
+
+- Status: CONFIRMED; superseded 2026-11-14 by AQP OD-6 (VM retired, service-token identity re-cut as P10)
+- User answers (2026-10-02): trigger "preview-hub 봇이 처리 (권장)"; auth "Access 서비스 토큰 (권장)"; timing "`/qa` 코멘트일 때만 (권장)".
+- Normalized value: phub-bot handles `/qa` and runs ai-qa in a `phub-aiqa` container in the same VM; unattended Access via a service token accepted by the hub only for environment routes and allowlisted client IDs; runs only on explicit `/qa`.
+- Confirmed at: 2026-10-02
+
+### QD12: QA5 review budget extension
+
+- Decision: QA5 exhausted its 5 review cycles (cycle 5: reviewer-2 clean; reviewer-1 P3 entry-origin-only service-token auth, P4 secret files validated in every mode). The user chose "2건 고치고 1회차 더 (권장)": fix P4 in code, document P3 as the K10 limitation (one origin per environment), and run one more review cycle requiring 2-of-2 clean.
+- Date: 2026-10-02
+- Follow-up (2026-10-02): cycle 6 had reviewer-2 clean and reviewer-1 P2 (service credentials could be sent to any HTTPS entryUrl). Fixed by restricting the entry host to `phub-<env>.<environment_domain>` on the default port before any request. The user chose "1회차 더 (권장)": one more cycle, 2-of-2 clean required.
+
+## Q3 revision 2 notes carried to P10 (reconciled 2026-11-15)
+
+Q3 design revision 2 (`/qa` through phub-bot inside the preview-hub VM: K7–K11, Q-R10–Q-R15, C1–C6, a `qa_runs` ledger in preview-hub) was approved on 2026-10-02 for digest 120bf84b76c3bf7dfa0cb19a973c055e1a125e86aaeb7e0adbf5686632a2ab1e, together with sprint manifest 20261002-q3-v1 (digest dbaeac7fab6f89ade25870ce6b4b0c1ed3bcbd7040de45838c53224fd0e2f820). The revision 2 edits, that manifest and the QA5/QH1 unit files were never committed. The VM part was retired on 2026-11-14 (AQP OD-6). The ai-qa side that shipped in QA5 (#5) is documented in the README. The full local text is kept outside the repository in `~/.agent-skills/state/ai-qa-dev-reconcile/`. AQP `units/AT1/feature.md` already records that P10 adds a service-identity allowlist on `/auth/verify`, that dashboard routes stay human-only, and that the service-token headers stay out of the agent's browser. These are the extra details and reasons from revision 2 that P10 should carry:
+
+- Route scope (rev2 K8, KR-7): a service identity is accepted only on `GET /auth/verify`. Every dashboard or API route answers 403 to it (reason code `service_forbidden_route`). Reason: a service identity must never be able to change environments through the dashboard.
+- Allowlist (rev2 K8, C4): only client IDs in a non-secret setting (`PHUB_ACCESS_SERVICE_TOKENS` in rev2) pass. Any other client ID gets 401 on `/auth/verify` (`service_not_allowed`). An empty allowlist changes nothing, which keeps the merge inert.
+- Identity claim (rev2 KO3): AT1 states that the service JWT carries `common_name`, but no live probe is recorded, and OD-6 still requires the owner's token probe. Confirm the claim before merging, printing claim names only. Earlier attempt: preview-hub branch `feat/qh1-service-identity` (c91ac7ea).
+- Headers stay in preflight (rev2 KR-6): if the agent's browser sent `CF-Access-Client-Id/Secret`, they would leak to every third-party origin the page loads.
+- Cost (rev2 07, unconfirmed): revision 2 assumed that Access service tokens and Service Auth are included in the Zero Trust Free plan. Confirm this on the live setup before P10, because no paid service is allowed.
+
 ## Open questions
 
 - None blocking the brief. Design inputs: default agent CLI (Claude Code vs Codex) and how Playwright MCP is launched and sandboxed; where reports and evidence are stored; how the scenario file is read at the pinned commit.
@@ -256,4 +279,11 @@ Given a READY preview-hub environment, one command runs natural-language E2E sce
 - 2026-10-01: QU2 budget exhausted at cycle 7 (1 low); user granted the QU2-only low-findings exception QD10.
 - 2026-10-01: QU2 merged (0ee478ac) after review cycle 8 clean 2/2. QU4 reserved and claimed; owner login requested.
 - 2026-10-02: QU4 merged (62782339) after live run 1 passing B1–B5 and review cycle 3 clean 2/2. SPRINT_COMPLETE for 20260930-q1-v1.
+- 2026-10-02: Q3 planning started; QD11 recorded; Q-R10–Q-R15 and C1–C6 drafted. Facts checked: `claude setup-token` exists in CLI 2.1.285 (long-lived subscription token); Access service tokens authenticate with CF-Access-Client-Id/Secret headers and need a Service Auth policy (JWT claims for service tokens to be confirmed in design with a live probe).
+- 2026-10-02: Design revision 2 (Q3) produced; Q3 brief confirmed by the user ("응 이 범위로 확정하고 설계 시작해줘"). validate_design valid; review KR-6..10 (4 accepted, 1 rejected). Awaiting Design Gate for digest 120bf84b76c3bf7dfa0cb19a973c055e1a125e86aaeb7e0adbf5686632a2ab1e.
+- 2026-10-02: Design Gate approved for revision 2 digest 120bf84b76c3bf7dfa0cb19a973c055e1a125e86aaeb7e0adbf5686632a2ab1e (revalidated unchanged). Next: Q3 manifest.
+- 2026-10-02: Q3 manifest 20261002-q3-v1 confirmed (digest dbaeac7fab6f89ade25870ce6b4b0c1ed3bcbd7040de45838c53224fd0e2f820); SPRINT_RUNNING; QA5 and QH1 claimed.
+- 2026-10-02: QA5 cycles 1–5 done (VM image smoke fixed the MCP Chromium install); QD12 granted one extra cycle. QH1 PR cafitac/preview-hub#15 Draft, CI green, waiting for the owner service-token claim probe.
+- 2026-10-02: QA5 merged (cafitac/ai-qa#5, 2352d06) after cycle 7 2-of-2 clean. QH2 waits for QH1 (owner service-token claim probe).
 - 2026-11-14: Q2 superseded by the agent-skills AQP pipeline (feature 20261114-ai-qa-pipeline). Q3 (QH2/QE, VM-based service identity) retired because the VM premise is gone; service-token identity on K8s is re-cut as P10 in AQP sprint 2.
+- 2026-11-15: Uncommitted Q3 edits from a stale checkout reconciled: QD11, QD12 and the 2026-10-02 history added; the points still relevant to P10 kept under "Q3 revision 2 notes carried to P10"; the rest dropped (VM retired or already in the README).

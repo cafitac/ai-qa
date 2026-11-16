@@ -137,6 +137,23 @@ least one of each and the tier budget holds (R1/R2 non-happy share at least 0.5)
 Output goes to stdout or `--out`; the result passes `design check --scenarios`.
 Exit 2 for invalid input, an unsatisfiable budget, or more than 50 scenarios.
 
+## MISSED mutant reach diagnosis
+
+`aiqa mutant reach --replay replay.yaml --run RUN_DIR [--run ...] --baseline base.json --mutant mut.json`
+tells, with no agent call and no ledger row, whether the inputs of a baseline run ever reach a
+seeded defect that the scenario set missed. It reads each `scenarios/*/attempt-*/agent.jsonl`
+under the run directories, keeps the text typed with `browser_type` and then submitted (`submit: true`,
+a click or Enter before the next type or navigation), sends each distinct text over HTTP to the
+baseline and the mutant environments (descriptor JSON of existing environments, as in
+`mutant validate`) and compares status and the response fields in `compare`. The replay file
+(`schemas/reach-replay.schema.json`, `apiVersion: ai-qa/reach/v1`) names the `service`, the `request`
+(`method`, `path`, `json` holding the string `{input}`), `trim` (what the page does to the text
+before sending) and `compare`. Output JSON `classification`: `REACHED` (some input is answered
+differently: look at the oracle or the agent), `UNREACHED` (every input answered identically and the
+baseline accepted one: a coverage gap), `INCONCLUSIVE` (no answer, a rate limit, or no accepted
+baseline answer) or `NO_INPUT`. Exit 0 for the first two, 1 otherwise, 2 for invalid input. It does
+not change the mutant verdict rules. Every replayed input is written to both environments.
+
 ## Observed axes
 
 `aiqa axes <repo-path>` statically reads a repository (Python `ast` only: nothing

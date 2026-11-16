@@ -1,4 +1,4 @@
-"""MISSED-mutant reach diagnosis core (AQP-1 F3; the `aiqa mutant reach` command is the next PR): a no-agent diagnosis. The text the baseline run typed into the page is
+"""`aiqa mutant reach` (AQP-1 F3): a MISSED mutant's no-agent diagnosis. The text the baseline run typed into the page is
 replayed over HTTP against the baseline and the mutant environments. A pair that answers differently means a scenario
 input reaches the defect (REACHED, so a PASSED verdict is an oracle or agent question); identical answers everywhere
 mean none does (UNREACHED, so a coverage gap). It makes no agent call, writes no ledger row and changes no verdict rule.
@@ -6,11 +6,25 @@ It does write: each replayed input is sent to both environments, as `mutant vali
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import argparse
+import json
+from collections.abc import Callable, Iterator
+from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
-from .contracts import InvalidInput, parse_json
+from . import mutants
+from .contracts import (
+    Config,
+    EnvironmentDescriptor,
+    InvalidInput,
+    load_json,
+    load_yaml,
+    parse_json,
+    url_origin,
+    validate,
+)
 from .mutants import NO_ANSWER, Http, dig, same
 
 PLACEHOLDER = "{input}"
@@ -144,3 +158,44 @@ def reach(
 def agent_logs(run_dir: Path) -> Iterator[tuple[str, Path]]:
     for log in sorted(run_dir.glob("scenarios/*/attempt-*/agent.jsonl")):
         yield log.parts[-3].replace("__", "/", 1), log
+
+
+def service_url(desc: EnvironmentDescriptor, service: str, at: datetime) -> str:
+    if reasons := desc.unready_reasons(at):
+        raise InvalidInput(
+            f"{desc.data['name']}: environment not ready: {','.join(reasons)}"
+        )
+    for s in desc.data["services"]:
+        if s["name"] == service and s["publicUrl"]:
+            return str(s["publicUrl"]).rstrip("/")
+    raise InvalidInput(
+        f"{desc.data['name']}: service {service} is not in the environment"
+    )
+
+
+def run(args: argparse.Namespace, clock: Callable[[], datetime]) -> int:
+    """Exit 0 for REACHED or UNREACHED, 1 when the diagnosis could not decide, 2 for invalid input."""
+    spec = validate("reach-replay", load_yaml(args.replay))
+    inputs = [
+        (f"{scenario}#{n}", text)
+        for run_dir in args.run
+        for scenario, log in agent_logs(run_dir)
+        for n, text in enumerate(typed_inputs(log), 1)
+    ]
+    urls = [
+        service_url(
+            EnvironmentDescriptor.parse(load_json(path)), spec["service"], clock()
+        )
+        for path in (args.baseline, args.mutant)
+    ]
+    from .secrets import resolve_access
+
+    config = Config.load(args.config)
+    if args.access:
+        config = replace(config, access_mode=args.access.replace("-", "_"))
+    failures: dict[str, str] = {}
+    origins = {url_origin(u) for u in urls}
+    with mutants.playwright_http(resolve_access(config), origins, failures) as http:
+        report = reach(spec, inputs, (http, urls[0]), (http, urls[1]))
+    print(json.dumps({**report, "preflight_failures": failures}, indent=2))
+    return 0 if report["classification"] in ("REACHED", "UNREACHED") else 1

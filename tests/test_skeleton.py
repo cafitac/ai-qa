@@ -114,6 +114,12 @@ def test_rejects_unsound_references(tmp_path):
     bad["matrix"][0]["req"] = "REQ-9"
     path.write_text(json.dumps(bad))
     assert cli_main(["design", "skeleton", "--design", str(path)]) == 2
+    path.write_text(json.dumps(design()))
+    missing = tmp_path / "absent" / "web.yaml"
+    assert (
+        cli_main(["design", "skeleton", "--design", str(path), "--out", str(missing)])
+        == 2
+    )
 
 
 def test_cli_round_trip(tmp_path, capsys):

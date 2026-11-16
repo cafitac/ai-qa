@@ -126,6 +126,17 @@ Scenario files may use `apiVersion: ai-qa/v2`, which adds the optional `ac`,
 (`skeleton|generated|critic|golden`) and `data` fields; `ai-qa/v1` files stay
 valid and run unchanged (v1 files may not carry the v2 fields).
 
+`aiqa design skeleton --design qa/design.yaml [--out FILE]` expands the
+design's `in`/`regression` cells (waived cells skipped) into a deterministic
+`ai-qa/v2` scenario file, with no model call: every scenario has
+`origin: skeleton`, one cell, and mechanical steps and expectations for an agent
+to fill. Axis decides the kind (`validation`, `empty_error`, `permission` and
+`disabled_detail` are negative, `boundary` is boundary, the rest happy), and
+extra negative and boundary scenarios are added so each R1/R2 requirement has at
+least one of each and the tier budget holds (R1/R2 non-happy share at least 0.5).
+Output goes to stdout or `--out`; the result passes `design check --scenarios`.
+Exit 2 for invalid input, an unsatisfiable budget, or more than 50 scenarios.
+
 ## Observed axes
 
 `aiqa axes <repo-path>` statically reads a repository (Python `ast` only: nothing

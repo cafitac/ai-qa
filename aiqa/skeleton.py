@@ -138,5 +138,10 @@ def run_skeleton(design: Path, out: Path | None) -> int:
     if out is None:
         print(text, end="")
     else:
-        out.write_text(text)
+        try:
+            out.write_text(text)
+        except OSError as error:
+            raise InvalidInput(
+                f"Cannot write output {out}: {error.strerror}"
+            ) from error
     return 0

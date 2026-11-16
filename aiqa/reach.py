@@ -120,8 +120,12 @@ def reach(
     if not (
         isinstance(request, dict)
         and isinstance(cast(dict[str, Any], request).get("json"), dict | list | str)
+        and isinstance(cast(dict[str, Any], request).get("method"), str)
+        and str(cast(dict[str, Any], request).get("path")).startswith("/")
     ):
-        raise InvalidInput("The replay spec needs a request with a json body")
+        raise InvalidInput(
+            "The replay spec needs a request with method, path and a json body"
+        )
     if not substitute(spec["request"]["json"], "")[1]:
         raise InvalidInput(f"request.json must hold {PLACEHOLDER!r}")
     rows: list[dict[str, Any]] = []

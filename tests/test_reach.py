@@ -160,6 +160,8 @@ def test_one_request_per_distinct_text_across_scenarios_and_attempts():
         {"compare": "text"},
         {"compare": [1]},
         {"request": None},
+        {"request": {**SPEC["request"], "method": None}},
+        {"request": {**SPEC["request"], "path": "x"}},
         {"request": {**SPEC["request"], "json": {"text": "fixed"}}},
     ],
 )

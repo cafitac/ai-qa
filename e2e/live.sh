@@ -131,7 +131,7 @@ scan() {
 scan "$ok_run"
 scan "$broken_run"
 sleep 1
-run 1 "$ok" "$work/capped.yaml" --only frontend/seed-notes-listed
+run 6 "$ok" "$work/capped.yaml" --only frontend/seed-notes-listed
 check B5 "$run_dir"
 scan "$run_dir"
 printf 'Live check passed; evidence retained under %s\n' "$runs_dir"

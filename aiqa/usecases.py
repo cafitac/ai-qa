@@ -28,7 +28,14 @@ from .ports import (
     ScenarioSource,
     VerdictGate,
 )
-from .run import Budget, Evidence, Run, ScenarioResult
+from .run import (
+    AGENT_SIDE_REASONS,
+    Budget,
+    Evidence,
+    Run,
+    ScenarioResult,
+    scenario_failure,
+)
 from .screenshots import is_screenshot
 from .storage import RunStorage, atomic_write, below_directory, write_json
 
@@ -63,13 +70,44 @@ class Refused(RuntimeError):
         self.reason = reason
 
 
-def agent_text(value: object) -> str:
-    if not isinstance(value, str) or len(value) > 500:
-        raise ValueError("Invalid agent text")
+AGENT_TEXT_MAX = 500
+TRUNCATED = "...[truncated]"
+
+
+def full_agent_text(value: object) -> str:
+    """UTF-8, no control characters except newline and tab; any length."""
+    if not isinstance(value, str):
+        raise TypeError("Invalid agent text")
     value.encode("utf-8")
     if any((ord(c) < 32 and c not in "\n\t") or 127 <= ord(c) <= 159 for c in value):
         raise ValueError("Invalid agent text")
     return value
+
+
+def agent_text(value: object) -> str:
+    if len(full_agent_text(value)) > AGENT_TEXT_MAX:
+        raise ValueError("Invalid agent text")
+    return cast(str, value)
+
+
+def clip_text(value: object) -> str:
+    """Agent prose over the cap is cut with a marker; the verdict itself stays valid."""
+    value = full_agent_text(value)
+    if len(value) > AGENT_TEXT_MAX:
+        value = value[: AGENT_TEXT_MAX - len(TRUNCATED)] + TRUNCATED
+    return value
+
+
+def clip_result(result: ScenarioResult) -> ScenarioResult:
+    """Cut only after redaction has scanned the full text."""
+    return replace(
+        result,
+        summary=clip_text(result.summary),
+        checks=tuple(
+            {**check, "observed": clip_text(check["observed"])}
+            for check in result.checks
+        ),
+    )
 
 
 def evidence_uri(
@@ -337,8 +375,13 @@ class RunScenarios:
     def _classify(
         self, environment: str, result: ScenarioResult, folder: Path, run_dir: Path
     ) -> ScenarioResult:
-        """FAILED becomes BLOCKED(environment) only on independent probe evidence."""
-        if result.status != "FAILED":
+        """FAILED or agent-side BLOCKED becomes BLOCKED(environment) on probe evidence."""
+        agent_side = (
+            result.status == "BLOCKED"
+            and result.reason in AGENT_SIDE_REASONS
+            and not any(folder.rglob("redacted.log"))
+        )
+        if result.status != "FAILED" and not agent_side:
             return result
         reasons = self.readiness_probe(environment)
         if not reasons:
@@ -457,7 +500,6 @@ class RunScenarios:
                 state = boundary_call("Browser", lambda: browser.preflight(entry))
             run.start(descriptor.commits(), [s.qualified_id for s in scenarios])
             self.storage.save(run)
-            retries = budget.protocol_retries
             agent_calls = 0
             for index, scenario in enumerate(scenarios):
                 folder = path / "scenarios" / scenario.qualified_id.replace("/", "__")
@@ -552,11 +594,8 @@ class RunScenarios:
                                         )
                                         else None,
                                     )
-                                    result = ScenarioResult(
-                                        scenario.qualified_id,
-                                        "FAILED",
-                                        "agent_protocol",
-                                        "agent_protocol",
+                                    result = scenario_failure(
+                                        scenario.qualified_id, "agent_protocol"
                                     )
                                 else:
                                     reason = (
@@ -569,13 +608,11 @@ class RunScenarios:
                                         else None
                                     )
                                     if reason:
-                                        result = ScenarioResult(
+                                        result = scenario_failure(
                                             scenario.qualified_id,
-                                            "FAILED",
                                             reason,
-                                            reason,
-                                            turns=output.turns,
-                                            seconds=output.seconds,
+                                            output.turns,
+                                            output.seconds,
                                         )
                                     else:
                                         files = tuple(output_dir.iterdir())
@@ -595,7 +632,13 @@ class RunScenarios:
                                                 raise ValueError(
                                                     "Invalid scenario identity"
                                                 )
-                                            agent_text(result.summary)
+                                            full_agent_text(result.summary)
+                                            for check in result.checks:
+                                                full_agent_text(check["observed"])
+                                            if result.reason in AGENT_SIDE_REASONS:
+                                                result = replace(
+                                                    result, status="BLOCKED"
+                                                )
                                             for item in result.evidence:
                                                 evidence_uri(
                                                     item.uri,
@@ -606,17 +649,14 @@ class RunScenarios:
                                                 )
                                             for check in result.checks:
                                                 agent_text(check["expect"])
-                                                agent_text(check["observed"])
                                         except OSError:
                                             raise
                                         except Exception:  # noqa: BLE001 - agent interpretation boundary
-                                            result = ScenarioResult(
+                                            result = scenario_failure(
                                                 scenario.qualified_id,
-                                                "FAILED",
                                                 "agent_protocol",
-                                                "agent_protocol",
-                                                turns=output.turns,
-                                                seconds=output.seconds,
+                                                output.turns,
+                                                output.seconds,
                                             )
                                 from .redact import Redactor
 
@@ -630,9 +670,6 @@ class RunScenarios:
                                     and (output_dir / "redacted.log").exists()
                                 ):
                                     break
-                                if result.reason == "agent_protocol" and retries:
-                                    retries -= 1
-                                    continue
                                 evidence = list(result.evidence)
                                 candidates = [
                                     (f, "screenshot")
@@ -682,18 +719,14 @@ class RunScenarios:
                                     redactor.scan(attempt_dir)
                                     self.redaction_ran = True
                     except OSError:
-                        result = ScenarioResult(
-                            scenario.qualified_id,
-                            "FAILED",
-                            "agent_error",
-                            "agent_error",
-                        )
+                        result = scenario_failure(scenario.qualified_id, "agent_error")
                 from .redact import Redactor
 
                 result = self._classify(environment, result, folder, path)
                 result = Redactor.from_state(
                     state, cfg.access_team_domain, loaded_secrets=secrets
                 ).apply(result, folder, path)
+                result = clip_result(result)
                 run.record(result)
                 write_json(folder / "result.json", result.as_dict())
                 self.storage.save(run)

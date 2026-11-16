@@ -222,7 +222,8 @@ def test_gate(context, case, reason):
         SCENARIO, output, transcript, tuple(context.output_dir.iterdir()), context
     )
     assert result.reason == reason
-    assert result.status == ("PASSED" if case == "passed" else "FAILED")
+    status = {"passed": "PASSED", "failed": "FAILED", "false": "FAILED"}
+    assert result.status == status.get(case, "BLOCKED")
 
 
 @pytest.mark.parametrize(
@@ -775,7 +776,7 @@ def test_runner_collects_cwd_screenshot_and_removes_cwd(context, monkeypatch, ti
     assert output.timed_out is timeout
     assert (context.output_dir / "final.png").read_bytes() == PNG
     result = VerdictGate().accept(SCENARIO, output, output.transcript_path, (), context)
-    assert result.status == ("FAILED" if timeout else "PASSED")
+    assert result.status == ("BLOCKED" if timeout else "PASSED")
     assert result.reason == ("timeout" if timeout else None)
 
 
@@ -1016,7 +1017,7 @@ def test_malformed_stream_is_protocol_for_only_that_scenario(tmp_path):
 
     def launcher(command, **kwargs):
         calls.append(command)
-        malformed = len(calls) <= 2
+        malformed = len(calls) == 1
         event = {
             "type": "result",
             "result": answer(),
@@ -1039,11 +1040,11 @@ def test_malformed_stream_is_protocol_for_only_that_scenario(tmp_path):
     uc.browser_session = SimpleNamespace(
         preflight=lambda url: state, close=lambda: None
     )
-    assert uc.execute("demo") == 1
-    assert len(calls) == 3
+    assert uc.execute("demo") == 6
+    assert len(calls) == 2
     assert uc.last_run.state == "COMPLETED"
     assert [(r.status, r.reason) for r in uc.last_run.results] == [
-        ("FAILED", "agent_protocol"),
+        ("BLOCKED", "agent_protocol"),
         ("PASSED", None),
     ]
 

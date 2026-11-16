@@ -6,10 +6,10 @@ from typing import Any, cast
 
 from .contracts import InvalidInput, Scenario, url_origin
 from .ports import AgentContext, AgentOutput
-from .run import ScenarioResult
+from .run import ScenarioResult, scenario_failure
 from .screenshots import is_screenshot
 from .storage import below_directory
-from .usecases import agent_text
+from .usecases import full_agent_text
 
 
 def navigation_urls(value: Any) -> list[str]:
@@ -45,13 +45,8 @@ class VerdictGate:
         caps: AgentContext,
     ) -> ScenarioResult:
         def fail(reason: str) -> ScenarioResult:
-            return ScenarioResult(
-                scenario.qualified_id,
-                "FAILED",
-                reason,
-                reason,
-                turns=output.turns,
-                seconds=output.seconds,
+            return scenario_failure(
+                scenario.qualified_id, reason, output.turns, output.seconds
             )
 
         if output.timed_out:
@@ -88,7 +83,7 @@ class VerdictGate:
                 value["checks"], list
             ):
                 raise ValueError("Invalid verdict")
-            agent_text(value["summary"])
+            full_agent_text(value["summary"])
             for check in value["checks"]:
                 if (
                     not isinstance(check, dict)
@@ -99,7 +94,7 @@ class VerdictGate:
                 check = cast(dict[str, Any], check)
                 if type(check["index"]) is not int:
                     raise ValueError("Invalid index")
-                agent_text(check["observed"])
+                full_agent_text(check["observed"])
             if sorted(check["index"] for check in value["checks"]) != list(
                 range(len(scenario.expect))
             ):

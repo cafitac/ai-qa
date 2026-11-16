@@ -57,6 +57,8 @@ def main(
     gate.add_argument("--spec", type=Path, required=True)
     gate.add_argument("--design", type=Path, required=True)
     gate.add_argument("--scenarios", type=Path)
+    gate.add_argument("--axes", type=Path)
+    gate.add_argument("--axes-scope", action="append", default=[])
     gate.add_argument("--format", choices=["json", "text"], default="json")
     skeleton = design.add_parser("skeleton")
     skeleton.add_argument("--design", type=Path, required=True)
@@ -93,7 +95,14 @@ def main(
                 return run_skeleton(args.design, args.out)
             from .design import run_check
 
-            return run_check(args.spec, args.design, args.scenarios, args.format)
+            return run_check(
+                args.spec,
+                args.design,
+                args.scenarios,
+                args.format,
+                args.axes,
+                tuple(args.axes_scope),
+            )
         config = Config.load(args.config)
         if args.command == "prune":
             storage = RunStorage(config.runs_dir)

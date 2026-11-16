@@ -41,10 +41,38 @@ AXES = {
     "transition": "state",
     "validator": "validation",
     "constraint": "validation",
+    "length_split": "boundary",
     "feature_flag": "flag",
     "error_response": "empty_error",
 }
+# Every string `max_length` has these inputs; `whitespace_preserved` is required
+# by `design check` only when an in-scope AC says the stored text is unchanged.
+LENGTH_SPLITS = {
+    "at_max": "max_length ASCII characters: accepted",
+    "over_max": "max_length + 1 ASCII characters: refused",
+    "multibyte_near_max": (
+        "max_length characters of multi-byte text (3-byte Hangul, one astral "
+        "character) whose UTF-8 bytes and UTF-16 units exceed max_length: "
+        "accepted, because the limit counts characters"
+    ),
+    "normalized_fits": (
+        "more than max_length characters whose surplus is leading, trailing or "
+        "consecutive whitespace or newlines, so normalizing first would fit: "
+        "refused, because the limit applies to the raw input"
+    ),
+    "whitespace_preserved": (
+        "internal consecutive spaces and newlines within the limit: stored "
+        "text is exactly the submitted text"
+    ),
+}
+STRINGISH = {"str", "StrictStr", "constr"}
+NOT_STRING = {"list", "List", "set", "Set", "tuple", "Tuple", "dict", "Dict", "bytes"}
 Func = ast.FunctionDef | ast.AsyncFunctionDef
+
+
+def _is_string(annotation: ast.expr) -> bool:
+    names = {n.id for n in ast.walk(annotation) if isinstance(n, ast.Name)}
+    return bool(names & STRINGISH) and not names & NOT_STRING
 
 
 def _name(node: ast.AST | None) -> str:
@@ -211,9 +239,14 @@ class _Scan(ast.NodeVisitor):
                     if k.arg in LIMITS and _plain(v := _lit(k.value))
                 }
                 if limits:
-                    self.add(
-                        s, "constraint", f"{cls}.{ast.unparse(s.target)}", **limits
-                    )
+                    field = f"{cls}.{ast.unparse(s.target)}"
+                    self.add(s, "constraint", field, **limits)
+                    if isinstance(limits.get("max_length"), int) and _is_string(
+                        s.annotation
+                    ):
+                        for name, text in LENGTH_SPLITS.items():
+                            detail = {"max_length": limits["max_length"], "input": text}
+                            self.add(s, "length_split", f"{field}#{name}", **detail)
         self._scoped(node, node.name)
 
     def _scoped(

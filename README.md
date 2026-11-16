@@ -102,7 +102,7 @@ Optional `aiqa.yaml` / `--config FILE` configures budgets and output paths. `AIQ
 
 ## QA design check
 
-`aiqa design check --spec spec.json --design qa/design.yaml [--scenarios DIR|manifest.json] [--format json|text]`
+`aiqa design check --spec spec.json --design qa/design.yaml [--scenarios DIR|manifest.json] [--axes axes.json] [--format json|text]`
 checks a QA design (`ai-qa/qa-design/v1`) against the acceptance criteria in a
 spec export (`ai-qa/spec/v1`) without any network or run state. Exit 0: no
 gaps; 1: gaps, each `{code, subject, detail}`; 2: invalid input (unreadable or
@@ -111,6 +111,14 @@ malformed files, schema violations, a spec and design that name different
 `G1_AC_UNKNOWN`, `G2_REQ_NO_CELL`, `G3_SCOPE_MISMATCH`, `G3_RISK_MISMATCH`,
 `G5_OBSERVED_NO_EXPECTED`, `G7_DUPLICATE_ID`, `G7_DANGLING_REF`. Schemas:
 `schemas/qa-design.schema.json`, `schemas/spec.schema.json`.
+
+With `--axes` (the output of `aiqa axes`), rule `G8_SPLIT_MISSING` runs: every
+string `max_length` yields five derived `length_split` cells (`at_max`,
+`over_max`, `multibyte_near_max`, `normalized_fits`, `whitespace_preserved`; the
+last only when an in-scope AC says the stored text is unchanged) and each must
+be listed in an `in`/`regression` matrix cell's `splits` (cell keys) or waived
+with a `{split, card, reason}` waiver. A `splits` or waiver key that names no
+derived cell is `G7_DANGLING_REF`.
 
 With `--scenarios` (a directory of `<service>.yaml` scenario files, or a
 `qa/manifest.json`, `schemas/scenario-manifest.schema.json`) two more rules run:
@@ -143,8 +151,8 @@ Exit 2 for invalid input, an unsatisfiable budget, or more than 50 scenarios.
 is imported, run or fetched) and prints JSON `ai-qa/axes/v1` with `axes`
 (`observed` or `unknown`), `extractor` and `cells`. The FastAPI extractor emits
 observed cells (`source: observed`, `platform: web`, a qa-design `axis`) for
-routes, role dependencies, enums and transition tables, pydantic validators and
-field limits, environment feature flags and `HTTPException` responses. Each cell
+routes, role dependencies, enums and transition tables, pydantic validators,
+field limits (plus five `length_split` cells per string `max_length`), environment feature flags and `HTTPException` responses. Each cell
 has a stable `key`, `kind`, `subject`, `file`, `line` and optional `detail`. An
 unsupported stack prints `axes: unknown` and exits 0; a missing path exits 2.
 Routes are read only on routers and apps constructed in the same module (matched

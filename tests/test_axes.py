@@ -39,6 +39,10 @@ def test_fastapi_fixture_yields_every_observed_axis() -> None:
         ("validation", "constraint", "OrderCreate.title"),
         ("flag", "feature_flag", "SHIP_MODE"),
         ("flag", "feature_flag", "NOTIFIER_URL"),
+    } | {
+        ("boundary", "length_split", f"OrderCreate.title#{n}")
+        for n in ("at_max", "over_max", "multibyte_near_max")
+        + ("normalized_fits", "whitespace_preserved")
     }
     detail = {c["kind"]: c["detail"] for c in out["cells"] if "detail" in c}
     assert detail["enum"] == {"values": ["NEW", "PAID", "SHIPPED"]}

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from .contracts import (
     InvalidInput,
@@ -18,6 +19,9 @@ from .contracts import (
 
 Doc = dict[str, Any]
 COVERING = ("in", "regression")
+NO_CHANGE = re.compile(
+    r"no change|unchanged|exactly the submitted|verbatim|변경 없|그대로", re.IGNORECASE
+)
 
 
 @dataclass(frozen=True)
@@ -50,6 +54,8 @@ def check(spec: Doc, design: Doc) -> list[Gap]:
         if c["req"] not in reqs:
             add("G7_DANGLING_REF", c["id"], f"unknown requirement {c['req']}")
     for w in waivers:
+        if "split" in w:  # checked against the axes in check_splits
+            continue
         ref = w.get("cell") or w["ac"]
         if ref not in (cell_ids if "cell" in w else acs):
             add("G7_DANGLING_REF", ref, f"waiver {w['card']} names an unknown id")
@@ -80,6 +86,49 @@ def check(spec: Doc, design: Doc) -> list[Gap]:
             and c["id"] not in waived_cells
         ):
             add("G5_OBSERVED_NO_EXPECTED", c["id"], "no expected and no waiver")
+    return gaps
+
+
+def load_splits(path: Path) -> dict[str, str]:
+    """`length_split` cell key -> required input, from `aiqa axes` JSON."""
+    raw = load_json(path)
+    doc = cast(Doc, raw) if isinstance(raw, dict) else {}
+    cells = doc.get("cells")
+    if doc.get("apiVersion") != "ai-qa/axes/v1" or not isinstance(cells, list):
+        raise InvalidInput("--axes is not `aiqa axes` output")
+    found: dict[str, str] = {}
+    for item in cast(list[Any], cells):
+        cell = cast(Doc, item) if isinstance(item, dict) else {}
+        detail = cell.get("detail")
+        text = (
+            str(cast(Doc, detail).get("input", "")) if isinstance(detail, dict) else ""
+        )
+        if cell.get("kind") == "length_split" and isinstance(cell.get("key"), str):
+            found[cell["key"]] = text
+    return found
+
+
+def check_splits(spec: Doc, design: Doc, derived: dict[str, str]) -> list[Gap]:
+    """G8: every derived `length_split` cell is covered by an in-scope cell or waived."""
+    covered = {
+        k
+        for c in design["matrix"]
+        if c["scope"] in COVERING
+        for k in c.get("splits", [])
+    }
+    waived = {w["split"] for w in design.get("waivers", []) if "split" in w}
+    unchanged = any(
+        NO_CHANGE.search(a["text"]) for a in spec["acs"] if a["scope"] == "in"
+    )
+    gaps = [
+        Gap("G7_DANGLING_REF", k, "split names no axes length_split cell")
+        for k in sorted((covered | waived) - derived.keys())
+    ]
+    for key, need in sorted(derived.items()):
+        if key.endswith("#whitespace_preserved") and not unchanged:
+            continue  # only a no-change AC makes it a requirement
+        if key not in covered | waived:
+            gaps.append(Gap("G8_SPLIT_MISSING", key, need))
     return gaps
 
 
@@ -126,13 +175,21 @@ def load_linkage(path: Path) -> list[ScenarioLinks]:
     return manifest_links(load_json(path))
 
 
-def run_check(spec: Path, design: Path, scenarios: Path | None, fmt: str) -> int:
+def run_check(
+    spec: Path,
+    design: Path,
+    scenarios: Path | None,
+    fmt: str,
+    axes: Path | None = None,
+) -> int:
     spec_doc = validate("spec", load_json(spec))
     design_doc = validate("qa-design", load_yaml(design))
     if spec_doc["feature"] != design_doc["feature"]:
         raise InvalidInput("Spec and design name different features")
     linked = None if scenarios is None else load_linkage(scenarios)
     gaps = check(spec_doc, design_doc)
+    if axes is not None:
+        gaps += check_splits(spec_doc, design_doc, load_splits(axes))
     if linked is not None:
         gaps += check_linkage(design_doc, linked)
     if fmt == "json":

@@ -164,7 +164,7 @@ marked `detail.prefix: unresolved`. A string field with a literal `max_length`
 also yields five `length_split` cells (`at_max`, `over_max`, `multibyte_near_max`,
 `normalized_fits`, `whitespace_preserved`) that say which input to send and what
 to observe. A field counts as a string when its annotation is `str`, `StrictStr`,
-`SecretStr`, `EmailStr` or `Text`, alone or inside quotes, `Optional`, `Union`,
+`SecretStr`, `EmailStr`, `Text` or `constr(...)`, alone or inside quotes, `Optional`, `Union`,
 `| None` or `Annotated`; `list[str]` and other containers do not (there
 `max_length` counts items). Limits come from `Annotated[T, Field(...)]` or
 `StringConstraints(...)` metadata and the assigned `Field(...)`, the assignment winning, as in pydantic. Not read:

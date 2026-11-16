@@ -87,7 +87,11 @@ def test_persisted_blocked_only_run_is_reloaded_by_show(paths, capsys):
 def test_agent_say_so_alone_is_not_blocked(paths):
     uc = make(paths, {"web/test-0": "BLOCKED", "web/test-1": "FAILED"}, lambda e: UP)
     assert uc.execute("demo") == 1
-    assert {r.status for r in uc.last_run.results} == {"FAILED"}
+    # An invalid self-reported BLOCKED is a protocol failure, never environment.
+    assert [(r.status, r.reason) for r in uc.last_run.results] == [
+        ("BLOCKED", "agent_protocol"),
+        ("FAILED", None),
+    ]
 
 
 def test_probe_error_or_missing_descriptor_keeps_failed(paths):

@@ -56,6 +56,28 @@ class ScenarioResult:
         return validate("scenario-result", data)
 
 
+AGENT_SIDE_REASONS = frozenset(
+    {
+        "timeout",
+        "turn_cap",
+        "agent_error",
+        "agent_protocol",
+        "no_evidence",
+        "out_of_scope",
+    }
+)
+
+
+def scenario_failure(
+    scenario_id: str, reason: str, turns: int = 0, seconds: float = 0
+) -> ScenarioResult:
+    """Agent-side failures say nothing about the product: BLOCKED, not FAILED."""
+    status = "BLOCKED" if reason in AGENT_SIDE_REASONS else "FAILED"
+    return ScenarioResult(
+        scenario_id, status, reason, reason, turns=turns, seconds=seconds
+    )
+
+
 @dataclass
 class Run:
     id: str

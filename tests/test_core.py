@@ -233,7 +233,7 @@ def test_budget_skips(setup_run):
 )
 def test_caps_continue(setup_run, output, reason):
     uc, fake = usecase(setup_run, [output])
-    assert uc.execute("demo") == 1
+    assert uc.execute("demo") == 6
     assert len(fake.calls) == 2
     assert (
         uc.last_run.results[0].reason == reason
@@ -241,17 +241,15 @@ def test_caps_continue(setup_run, output, reason):
     )
 
 
-def test_protocol_retry_is_global(setup_run):
-    uc, fake = usecase(
-        setup_run, [AgentOutput("bad"), AgentOutput("bad"), AgentOutput("bad")]
-    )
-    assert uc.execute("demo") == 1 and len(fake.calls) == 3
-    assert all(r.reason == "agent_protocol" for r in uc.last_run.results)
-
-
-def test_protocol_retry_pass(setup_run):
+def test_protocol_failure_is_blocked_without_rerun(setup_run):
+    # A re-run would act again on the environment the first attempt changed.
     uc, fake = usecase(setup_run, [AgentOutput("bad")])
-    assert uc.execute("demo") == 0 and len(fake.calls) == 3
+    assert uc.execute("demo") == 6 and len(fake.calls) == 2
+    first, second = uc.last_run.results
+    assert (first.status, first.reason) == ("BLOCKED", "agent_protocol")
+    assert second.status == "PASSED"
+    folder = setup_run[2].runs_dir / uc.last_run.id / "scenarios/web__test-0"
+    assert [p.name for p in folder.glob("attempt-*")] == ["attempt-1"]
 
 
 @pytest.mark.parametrize(
@@ -561,8 +559,8 @@ def test_non_utf8_inputs(setup_run, monkeypatch, kind):
 def test_enforced_agent_call_cap(setup_run, retries):
     cfg = replace(setup_run[2], max_scenarios=1, protocol_retries=retries)
     uc, fake = usecase(setup_run, [AgentOutput("bad")] * 3, config=cfg)
-    assert uc.execute("demo") == 1
-    assert len(fake.calls) == Budget(1, protocol_retries=retries).max_agent_calls
+    assert uc.execute("demo") == 6
+    assert len(fake.calls) == 1
     assert uc.last_run.results[1].status == "SKIPPED"
 
 
@@ -924,41 +922,37 @@ def test_adapter_oserror(setup_run, monkeypatch, capsys, boundary):
     assert "private message" not in output
 
 
-def test_retry_evidence_isolation(setup_run):
-    from aiqa.usecases import JsonVerdictGate
+@pytest.mark.parametrize("verdict", ["PASSED", "FAILED"])
+@pytest.mark.parametrize("field", ["summary", "observed"])
+def test_long_agent_text_is_truncated_not_protocol(setup_run, verdict, field):
+    from aiqa.usecases import TRUNCATED
 
-    class Runner:
-        calls = 0
+    value = {
+        "status": verdict,
+        "summary": "ok",
+        "checks": [{"index": 0, "ok": verdict == "PASSED", "observed": "Visible"}],
+    }
+    long = "한" * 519
+    if field == "summary":
+        value["summary"] = long
+    else:
+        value["checks"][0]["observed"] = long
 
+    class Runner(FakeAgentRunner):
         def run(self, scenario, context):
-            self.calls += 1
-            name = "stale.png" if self.calls == 1 else "final.png"
-            (context.output_dir / name).write_bytes(b"\x89PNG\r\n\x1a\n")
-            transcript = context.output_dir / "agent.jsonl"
-            transcript.write_text(json.dumps({"call": self.calls}))
-            return AgentOutput(
-                "bad"
-                if self.calls == 1
-                else '{"status":"PASSED","summary":"ok","checks":[{"index":0,"ok":true,"observed":"Visible"}]}',
-                transcript,
-            )
+            output = super().run(scenario, context)
+            if scenario.id != "test-0":
+                return output
+            return replace(output, result_text=json.dumps(value))
 
-    class Gate(JsonVerdictGate):
-        def accept(self, scenario, output, transcript, files, caps):
-            if caps.output_dir.name == "attempt-2":
-                assert {f.name for f in files} == {"final.png", "agent.jsonl"}
-            return super().accept(scenario, output, transcript, files, caps)
-
-    uc, _ = usecase(setup_run, verdict_gate=Gate())
-    uc.agent_runner = Runner()
-    assert uc.execute("demo") == 0
+    uc, _ = usecase(setup_run)
+    uc.agent_runner = runner = Runner()
+    assert uc.execute("demo") == (0 if verdict == "PASSED" else 1)
+    assert len(runner.calls) == 2
     result = uc.last_run.results[0]
-    assert all(
-        "stale" not in e.uri and "attempt-1" not in e.uri for e in result.evidence
-    )
-    folder = setup_run[2].runs_dir / uc.last_run.id / "scenarios/web__test-0"
-    assert (folder / "attempt-1/stale.png").exists()
-    assert json.loads((folder / "attempt-1/agent.jsonl").read_text()) == {"call": 1}
+    assert (result.status, result.reason) == (verdict, None)
+    text = result.summary if field == "summary" else result.checks[0]["observed"]
+    assert len(text) == 500 and text == long[: 500 - len(TRUNCATED)] + TRUNCATED
 
 
 @pytest.mark.parametrize(
@@ -1111,16 +1105,16 @@ def test_yaml_scenario_and_config_dates_remain_strings(tmp_path):
     ],
 )
 def test_bad_agent_json_is_scenario_local(setup_run, bad):
-    uc, fake = usecase(setup_run, [AgentOutput(bad), AgentOutput(bad)])
-    assert uc.execute("demo") == 1
-    assert len(fake.calls) == 3
+    uc, fake = usecase(setup_run, [AgentOutput(bad)])
+    assert uc.execute("demo") == 6
+    assert len(fake.calls) == 2
     assert uc.last_run.state == "COMPLETED"
     assert [r.reason for r in uc.last_run.results] == ["agent_protocol", None]
     assert uc.last_run.results[1].status == "PASSED"
 
 
 @pytest.mark.parametrize("field", ["summary", "expect", "observed"])
-@pytest.mark.parametrize("text", ["\ud800", "\x00", "\r", "\x7f", "\x85", "x" * 501])
+@pytest.mark.parametrize("text", ["\ud800", "\x00", "\r", "\x7f", "\x85"])
 def test_bad_agent_strings_are_scenario_local(setup_run, field, text):
     value = {
         "status": "PASSED",
@@ -1132,9 +1126,9 @@ def test_bad_agent_strings_are_scenario_local(setup_run, field, text):
     else:
         value["checks"][0][field] = text
     bad = AgentOutput(json.dumps(value))
-    uc, fake = usecase(setup_run, [bad, bad])
-    assert uc.execute("demo") == 1
-    assert len(fake.calls) == 3
+    uc, fake = usecase(setup_run, [bad])
+    assert uc.execute("demo") == 6
+    assert len(fake.calls) == 2
     assert uc.last_run.state == "COMPLETED"
     assert uc.last_run.results[0].reason == "agent_protocol"
     assert uc.last_run.results[1].status == "PASSED"
@@ -1155,8 +1149,8 @@ def test_unexpected_gate_interpretation_is_scenario_local(setup_run, error):
             return super().accept(scenario, output, transcript, files, caps)
 
     uc, fake = usecase(setup_run, verdict_gate=Gate())
-    assert uc.execute("demo") == 1
-    assert len(fake.calls) == 3
+    assert uc.execute("demo") == 6
+    assert len(fake.calls) == 2
     assert uc.last_run.state == "COMPLETED"
     assert uc.last_run.results[0].reason == "agent_protocol"
     assert uc.last_run.results[1].status == "PASSED"
@@ -1244,9 +1238,9 @@ def test_surrogate_in_saved_run_is_invalid_input(tmp_path):
 )
 def test_invalid_agent_metadata_is_scenario_local(setup_run, field, bad):
     output = replace(AgentOutput("bad"), **{field: bad})
-    uc, fake = usecase(setup_run, [output, output])
-    assert uc.execute("demo") == 1
-    assert len(fake.calls) == 3
+    uc, fake = usecase(setup_run, [output])
+    assert uc.execute("demo") == 6
+    assert len(fake.calls) == 2
     assert uc.last_run.state == "COMPLETED"
     assert uc.last_run.results[0].reason == "agent_protocol"
     assert uc.last_run.results[1].status == "PASSED"
@@ -1294,8 +1288,8 @@ def test_gate_invalid_evidence_uri_is_scenario_local(setup_run):
             return result
 
     uc, fake = usecase(setup_run, verdict_gate=Gate())
-    assert uc.execute("demo") == 1
-    assert len(fake.calls) == 3
+    assert uc.execute("demo") == 6
+    assert len(fake.calls) == 2
     assert uc.last_run.state == "COMPLETED"
     assert uc.last_run.results[0].reason == "agent_protocol"
     assert uc.last_run.results[1].status == "PASSED"
@@ -1312,7 +1306,7 @@ def test_control_character_auto_evidence_is_scenario_local(setup_run, transcript
 
     uc, _ = usecase(setup_run)
     uc.agent_runner = Runner()
-    assert uc.execute("demo") == (1 if transcript else 0)
+    assert uc.execute("demo") == (6 if transcript else 0)
     assert uc.last_run.state == "COMPLETED"
     for result in uc.last_run.results:
         assert all("\n" not in e.uri for e in result.evidence)
@@ -1383,7 +1377,7 @@ def test_gate_evidence_must_stay_in_scenario(setup_run, uri):
             return result
 
     uc, _ = usecase(setup_run, verdict_gate=Gate())
-    assert uc.execute("demo") == 1
+    assert uc.execute("demo") == 6
     assert uc.last_run.state == "COMPLETED"
     assert uc.last_run.results[0].reason == "agent_protocol"
     assert uc.last_run.results[1].status == "PASSED"
@@ -1402,7 +1396,7 @@ def test_nonfinite_gate_result_is_scenario_local(setup_run):
             )
 
     uc, _ = usecase(setup_run, verdict_gate=Gate())
-    assert uc.execute("demo") == 1
+    assert uc.execute("demo") == 6
     assert uc.last_run.state == "COMPLETED"
     assert uc.last_run.results[0].reason == "agent_protocol"
 
@@ -1440,9 +1434,7 @@ def test_agent_attempt_name_does_not_collide_with_retry(setup_run, directory):
                 collision.write_text("synthetic")
             (context.output_dir / "final.png").write_bytes(b"\x89PNG\r\n\x1a\n")
             return AgentOutput(
-                "bad"
-                if self.calls == 1
-                else '{"status":"PASSED","summary":"ok","checks":[{"index":0,"ok":true,"observed":"Visible"}]}'
+                '{"status":"PASSED","summary":"ok","checks":[{"index":0,"ok":true,"observed":"Visible"}]}'
             )
 
     class Gate(JsonVerdictGate):
@@ -1454,7 +1446,7 @@ def test_agent_attempt_name_does_not_collide_with_retry(setup_run, directory):
     runner = Runner()
     uc.agent_runner = runner
     assert uc.execute("demo") == 0
-    assert runner.calls == 3
+    assert runner.calls == 2
     assert uc.last_run.state == "COMPLETED"
     assert all(r.status == "PASSED" for r in uc.last_run.results)
 
@@ -1497,7 +1489,7 @@ def test_agent_file_errors_fail_only_scenario(setup_run, monkeypatch, operation)
     uc, _ = usecase(setup_run, verdict_gate=Gate())
     # Artifact containment is lexical below the resolved storage root; it no longer
     # resolves individual files (or inspects their filesystem ancestors).
-    assert uc.execute("demo") == (0 if operation == "resolve" else 1)
+    assert uc.execute("demo") == (0 if operation == "resolve" else 6)
     assert uc.last_run.state == "COMPLETED"
     assert uc.last_run.results[0].reason == (
         None if operation == "resolve" else "agent_error"
@@ -1606,7 +1598,7 @@ def test_gate_evidence_rule(setup_run, case, valid):
     uc, _ = usecase(
         setup_run, config=replace(setup_run[2], protocol_retries=0), verdict_gate=Gate()
     )
-    assert uc.execute("demo") == (0 if valid else 1)
+    assert uc.execute("demo") == (0 if valid else 6)
     result = uc.last_run.results[0]
     if valid:
         assert result.evidence[0].type == ("http" if case == "http" else "log")
@@ -1661,7 +1653,7 @@ def test_redaction_blocks_retry_and_recording_secrets(setup_run):
     uc, _ = usecase(setup_run)
     runner = Runner()
     uc.agent_runner = runner
-    assert uc.execute("demo") == 1
+    assert uc.execute("demo") == 6
     assert runner.calls == 2  # one per scenario; redaction suppresses protocol retry
     assert all(r.reason == "agent_error" for r in uc.last_run.results)
     folder = uc.storage.root / uc.last_run.id
@@ -1766,7 +1758,7 @@ def test_invalid_navigation_does_not_retry(setup_run, monkeypatch, url):
         return output
 
     monkeypatch.setattr(fake, "run", navigate)
-    assert uc.execute("demo") == 1
+    assert uc.execute("demo") == 6
     assert all(result.reason == "out_of_scope" for result in uc.last_run.results)
     assert len(fake.calls) == len(uc.last_run.results)
 

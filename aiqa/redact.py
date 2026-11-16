@@ -87,7 +87,7 @@ class Redactor:
         atomic_write(directory / "redacted.log", "redacted\n")
         return replace(
             result,
-            status="FAILED",
+            status="BLOCKED",
             summary="agent_error",
             reason="agent_error",
             checks=(),

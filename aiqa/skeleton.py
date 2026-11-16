@@ -10,6 +10,7 @@ from .design import COVERING, Doc
 MIN_NEGATIVE = MIN_BOUNDARY = 1
 NON_HAPPY_SHARE = 0.5
 MAX_AC = 20  # scenario-file `ac` maxItems
+MAX_SCENARIOS = 50  # scenario-file `scenarios` maxItems
 MAX_TEXT = 500  # scenario-file `expect` item length
 SUFFIX = {"happy": "", "negative": "-neg", "boundary": "-bnd"}
 VARIANTS = {
@@ -60,7 +61,9 @@ def expand(design: Doc) -> list[Doc]:
         variant = VARIANTS[kind][ordinal % len(VARIANTS[kind])]
         suffix = SUFFIX[kind]
         suffix += str(ordinal + 1) if ordinal else ""
-        expected = cell.get("expected") or "Verify the expected cell behavior."
+        expected = (
+            cell.get("expected") or ""
+        ).strip() or "Verify the expected cell behavior."
         result.append(
             {
                 "id": f"sk-{cell['id'].lower()}{suffix}",
@@ -87,6 +90,8 @@ def expand(design: Doc) -> list[Doc]:
     for c in cells:
         kind = "negative" if c["axis"] in PREFERRED["negative"] else "happy"
         add(c, "boundary" if c["axis"] == "boundary" else kind)
+    if len(result) > MAX_SCENARIOS:  # the budget loop below can only add more
+        raise InvalidInput(f"Skeleton exceeds the {MAX_SCENARIOS}-scenario file limit")
     grouped = {r: [c for c in cells if c["req"] == r] for r in sorted(reqs)}
     for r, mine in grouped.items():
         if mine and reqs[r]["risk"] in ("R1", "R2"):
@@ -127,19 +132,21 @@ def expand(design: Doc) -> list[Doc]:
 
 def skeleton_file(design: Doc) -> Doc:
     scenarios = expand(design)
-    if len(scenarios) > 50:
-        raise InvalidInput("Skeleton exceeds the 50-scenario file limit")
+    if len(scenarios) > MAX_SCENARIOS:
+        raise InvalidInput(f"Skeleton exceeds the {MAX_SCENARIOS}-scenario file limit")
     return {"apiVersion": "ai-qa/v2", "scenarios": scenarios}
 
 
 def run_skeleton(design: Path, out: Path | None) -> int:
     doc = skeleton_file(validate("qa-design", load_yaml(design)))
-    text = json.dumps(validate("scenario-file", doc), indent=2) + "\n"
+    text = (
+        json.dumps(validate("scenario-file", doc), indent=2, ensure_ascii=False) + "\n"
+    )
     if out is None:
         print(text, end="")
     else:
         try:
-            out.write_text(text)
+            out.write_text(text, encoding="utf-8")
         except OSError as error:
             raise InvalidInput(
                 f"Cannot write output {out}: {error.strerror}"

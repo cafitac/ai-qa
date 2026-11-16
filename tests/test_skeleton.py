@@ -55,7 +55,9 @@ def test_ac3_and_determinism():
         assert {"negative", "boundary"} <= kinds
     assert sum(s["kind"] != "happy" for s in scenarios) >= len(scenarios) / 2
     assert all(s["origin"] == "skeleton" for s in scenarios)
-    assert "".join(scenarios[0]["expect"]) == "Expected " * 100  # 900 chars, 2 items
+    assert (
+        "".join(scenarios[0]["expect"]) == ("Expected " * 100).strip()
+    )  # 899 chars, 2 items
     ids = [s["id"] for s in scenarios]
     assert len(ids) == len(set(ids))
     assert "sk-c-4-bnd" in ids
@@ -85,6 +87,10 @@ def test_exemptions_and_strict_budget():
     assert "invalid value" in negatives[1]["steps"][0]
     d["budget"]["R3"]["nonHappyShare"] = 1
     with pytest.raises(InvalidInput, match="Unsatisfiable"):
+        expand(d)
+    d = design()
+    d["matrix"] = [{**d["matrix"][0], "id": f"C-{i}"} for i in range(1, 52)]
+    with pytest.raises(InvalidInput, match="50-scenario"):
         expand(d)
     d = design()
     d["budget"]["R1"]["min"] = 51
@@ -124,8 +130,9 @@ def test_rejects_unsound_references(tmp_path):
 
 def test_cli_round_trip(tmp_path, capsys):
     d = design()
+    d["matrix"][0]["expected"] = "Shows \U0001f600 and 한글"
     path = tmp_path / "design.json"
-    path.write_text(json.dumps(d))
+    path.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
     spec = tmp_path / "spec.json"
     acs = [{"id": f"AC{i}", "scope": "in", "text": "Works"} for i in range(1, 4)]
     spec_doc = {"apiVersion": "ai-qa/spec/v1", "feature": d["feature"], "acs": acs}

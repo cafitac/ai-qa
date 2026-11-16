@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from aiqa.axes import extract_axes
+from aiqa.axes.fastapi_extractor import LENGTH_SPLITS
 from aiqa.cli import main
 
 FIXTURES = Path(__file__).parent / "fixtures" / "axes"
@@ -39,6 +40,10 @@ def test_fastapi_fixture_yields_every_observed_axis() -> None:
         ("validation", "constraint", "OrderCreate.title"),
         ("flag", "feature_flag", "SHIP_MODE"),
         ("flag", "feature_flag", "NOTIFIER_URL"),
+    } | {
+        ("boundary", "length_split", f"OrderCreate.title#{n}")
+        for n in ("at_max", "over_max", "multibyte_near_max")
+        + ("normalized_fits", "whitespace_preserved")
     }
     detail = {c["kind"]: c["detail"] for c in out["cells"] if "detail" in c}
     assert detail["enum"] == {"values": ["NEW", "PAID", "SHIPPED"]}
@@ -154,3 +159,100 @@ def test_api_route_scopes_dup_keys_limits_opts_and_status_bounds(
     assert by[("role_check", "GET /n requires get_user")] == {"scopes": ["x", "y"]}
     assert not any(s.endswith(" /k") for k, s in by if k == "route")
     assert ("route", "GET /d") in by and ("route", "POST /d") not in by
+
+
+SPLIT_HEAD = "from fastapi import FastAPI\nfrom pydantic import BaseModel, Field\napp = FastAPI()\n"
+
+
+@pytest.mark.parametrize(
+    ("annotation", "derived"),
+    [
+        ("str", True),
+        ("StrictStr", True),
+        ("typing.Text", True),
+        ("EmailStr", True),
+        ("constr(min_length=1)", True),
+        ("Optional[str]", True),
+        ("typing.Optional['str']", True),
+        ("Union[str, None]", True),
+        ("Union[str, 'None']", True),
+        ("str | None", True),
+        ("'str'", True),
+        ("Annotated[str, 'x']", True),
+        ("Annotated[Optional[str], 'x']", True),
+        ("List[str]", False),
+        ("typing.List[str]", False),
+        ("Optional[list[str]]", False),
+        ("'list[str]'", False),
+        ("Sequence[str]", False),
+        ("Mapping[str, int]", False),
+        ("str | int", False),
+        ("Union[str, int]", False),
+        ("int", False),
+        ("bytes", False),
+    ],
+)
+def test_length_splits_only_for_string_fields(
+    tmp_path: Path, annotation: str, derived: bool
+) -> None:
+    source = (
+        f"{SPLIT_HEAD}class M(BaseModel):\n    f: {annotation} = Field(max_length=5)\n"
+    )
+    (tmp_path / "app.py").write_text(source)
+    found = [c for c in extract_axes(tmp_path)["cells"] if c["kind"] == "length_split"]
+    assert len(found) == derived * 5
+    assert all(
+        c["axis"] == "boundary" and c["detail"]["max_length"] == 5 for c in found
+    )
+
+
+def test_length_split_key_and_detail_are_stable(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        f"{SPLIT_HEAD}class M(BaseModel):\n    f: str = Field(max_length=5)\n"
+    )
+    cells = {c["key"]: c for c in extract_axes(tmp_path)["cells"]}
+    for name, text in LENGTH_SPLITS.items():
+        cell = cells[f"app.py::length_split:M.f#{name}"]
+        assert cell["detail"] == {"max_length": 5, "input": text}
+
+
+def test_limits_merge_in_pydantic_order(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        f"{SPLIT_HEAD}class M(BaseModel):\n"
+        "    a: Annotated[str, Field(max_length=3, min_length=1)] = Field(max_length=5)\n"
+        "    b: Annotated[Annotated[str, Field(max_length=3)], Field(max_length=5)]\n"
+        "    c: Annotated[str, Field(max_length=3)] = Field(max_length=MAX)\n"
+        "    d: Annotated[str, Field(max_length=3)] = Field(max_length=None)\n"
+        "    e: Annotated[str, Field(max_length=3)] = Field(**opts)\n"
+    )
+    out = {
+        c["subject"]: c["detail"]
+        for c in extract_axes(tmp_path)["cells"]
+        if c["kind"] == "constraint"
+    }
+    assert out == {"M.a": {"max_length": 5, "min_length": 1}, "M.b": {"max_length": 5}}
+
+
+@pytest.mark.parametrize(
+    ("body", "fields"),
+    [
+        ("a: Annotated[str, Field(max_length=5)]", {"M.a"}),
+        ("a: Annotated[str, Field(max_length=5)] = Field(default='')", {"M.a"}),
+        ("a: Annotated[str, Field(min_length=1), Field(max_length=5)]", {"M.a"}),
+        ("a: 'Annotated[str, Field(max_length=5)]'", {"M.a"}),
+        ("a: Optional[Annotated[str, Field(max_length=5)]] = None", {"M.a"}),
+        ("a: Annotated[str, StringConstraints(max_length=5)]", {"M.a"}),
+        ("a: Annotated[list[str], Field(max_length=5)]", set()),
+        ("a: Annotated[int, Field(max_length=5)]", set()),
+        ("a: str = Field(min_length=1)", set()),
+        ("a: str = Field(max_length=True)", set()),
+        ("a: str = Field(max_length=0)", set()),
+    ],
+)
+def test_length_splits_read_annotated_field_metadata(
+    tmp_path: Path, body: str, fields: set[str]
+) -> None:
+    (tmp_path / "app.py").write_text(f"{SPLIT_HEAD}class M(BaseModel):\n    {body}\n")
+    out = extract_axes(tmp_path)["cells"]
+    split = {c["subject"].split("#")[0] for c in out if c["kind"] == "length_split"}
+    assert split == fields

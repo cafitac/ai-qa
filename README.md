@@ -168,18 +168,25 @@ change the mutant verdict rules.
 is imported, run or fetched) and prints JSON `ai-qa/axes/v1` with `axes`
 (`observed` or `unknown`), `extractor` and `cells`. The FastAPI extractor emits
 observed cells (`source: observed`, `platform: web`, a qa-design `axis`) for
-routes, role dependencies, enums and transition tables, pydantic validators and
+routes, role dependencies, enums and transition tables, pydantic validators,
 field limits, environment feature flags and `HTTPException` responses. Each cell
 has a stable `key`, `kind`, `subject`, `file`, `line` and optional `detail`. An
 unsupported stack prints `axes: unknown` and exits 0; a missing path exits 2.
 Routes are read only on routers and apps constructed in the same module (matched
 by variable name: rebinding, attribute chains and shadowing parameters are not
 resolved), and only a router's own `prefix` applies; a non-literal prefix is
-marked `detail.prefix: unresolved`. Not read: `include_router` prefixes,
-router-level dependencies, `Query`/`Path`/`Annotated[...]` limits (class-body
-`Field(...)` limits only), import aliases other than the router constructors,
-`_ignore_` enum contents, and non-literal `api_route` `methods` or `Security`
-`scopes`. Dependencies are matched by name.
+marked `detail.prefix: unresolved`. A string field with a literal `max_length`
+also yields five `length_split` cells (`at_max`, `over_max`, `multibyte_near_max`,
+`normalized_fits`, `whitespace_preserved`) that say which input to send and what
+to observe. A field counts as a string when its annotation is `str`, `StrictStr`,
+`SecretStr`, `EmailStr`, `Text` or `constr(...)`, alone or inside quotes, `Optional`, `Union`,
+`| None` or `Annotated`; `list[str]` and other containers do not (there
+`max_length` counts items). Limits come from `Annotated[T, Field(...)]` or
+`StringConstraints(...)` metadata and the assigned `Field(...)`, the assignment winning, as in pydantic. Not read:
+`include_router` prefixes, router-level dependencies, `Query`/`Path` and
+`constr(...)` limits and type aliases (class-body `Field(...)` and `StringConstraints(...)` limits only), import aliases other
+than the router constructors, `_ignore_` enum contents, and non-literal
+`api_route` `methods` or `Security` `scopes`. Dependencies are matched by name.
 
 ## Reading a report
 

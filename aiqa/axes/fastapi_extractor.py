@@ -41,10 +41,71 @@ AXES = {
     "transition": "state",
     "validator": "validation",
     "constraint": "validation",
+    "length_split": "boundary",
     "feature_flag": "flag",
     "error_response": "empty_error",
 }
+# Every string `max_length` yields these inputs for the design to cover. The wording states what to send and what to
+# observe, never what the code does.
+LENGTH_SPLITS = {
+    "at_max": "max_length ASCII characters: observe whether it is accepted and what is stored",
+    "over_max": "max_length + 1 ASCII characters: observe whether it is accepted and what is stored",
+    "multibyte_near_max": (
+        "max_length characters of multi-byte text (3-byte Hangul or an astral character): "
+        "shows whether the limit counts characters, bytes or UTF-16 units"
+    ),
+    "normalized_fits": (
+        "more than max_length characters whose surplus is leading, trailing or "
+        "consecutive whitespace or newlines: shows whether the limit applies "
+        "before or after normalizing"
+    ),
+    "whitespace_preserved": (
+        "internal consecutive spaces and newlines within the limit: shows "
+        "whether the stored text is exactly the submitted text"
+    ),
+}
+STRINGS = {"str", "StrictStr", "SecretStr", "EmailStr", "Text"}
 Func = ast.FunctionDef | ast.AsyncFunctionDef
+
+
+def _shape(a: ast.expr) -> tuple[bool, list[ast.Call]]:
+    """(is a string type, `Field(...)` calls in `Annotated` metadata) of an annotation, looking through quotes, `Optional`,
+    `Union`, `| None` and `Annotated`. `list[str]` and other containers are not strings: their `max_length` counts items."""
+    if isinstance(a, ast.Constant) and isinstance(a.value, str):
+        try:
+            return _shape(ast.parse(a.value, mode="eval").body)
+        except (SyntaxError, ValueError, RecursionError):
+            return False, []
+    meta: list[ast.Call] = []
+    if isinstance(a, ast.BinOp) and isinstance(a.op, ast.BitOr):
+        parts = [a.left, a.right]
+    elif isinstance(a, ast.Subscript) and _name(a.value) in {
+        "Optional",
+        "Annotated",
+        "Union",
+    }:
+        inner = a.slice.elts if isinstance(a.slice, ast.Tuple) else [a.slice]
+        parts = inner[:1] if _name(a.value) == "Annotated" else inner
+        if _name(a.value) == "Annotated":
+            meta = [
+                m
+                for m in inner[1:]
+                if isinstance(m, ast.Call)
+                and _name(m) in FIELDS | {"StringConstraints"}
+            ]
+    else:
+        return _name(a) in STRINGS or (
+            isinstance(a, ast.Call) and _name(a) == "constr"
+        ), []
+    real = [
+        p
+        for p in parts
+        if not (isinstance(p, ast.Constant) and p.value in (None, "None"))
+    ]
+    shapes = [_shape(p) for p in real]
+    return bool(real) and all(s for s, _ in shapes), [
+        m for _, ms in shapes for m in ms
+    ] + meta
 
 
 def _name(node: ast.AST | None) -> str:
@@ -199,21 +260,34 @@ class _Scan(ast.NodeVisitor):
             ]
             self.add(node, "enum", cls, values=members)
         for s in node.body:
-            call = s.value if isinstance(s, ast.AnnAssign) else None
-            if (
-                isinstance(s, ast.AnnAssign)
-                and isinstance(call, ast.Call)
-                and _name(call) in FIELDS
-            ):
-                limits = {
-                    k.arg: v
-                    for k in call.keywords
-                    if k.arg in LIMITS and _plain(v := _lit(k.value))
-                }
-                if limits:
-                    self.add(
-                        s, "constraint", f"{cls}.{ast.unparse(s.target)}", **limits
-                    )
+            if not isinstance(s, ast.AnnAssign):
+                continue
+            stringy, calls = _shape(
+                s.annotation
+            )  # pydantic: Annotated metadata first, the assigned Field() wins
+            if isinstance(s.value, ast.Call) and _name(s.value) in FIELDS:
+                calls.append(s.value)
+            limits: dict[str, Any] = {}
+            for call in calls:  # a later non-literal value or None makes the limit unknown, never a stale literal
+                for k in call.keywords:
+                    if k.arg is None:  # **opts may carry any limit
+                        limits.clear()
+                    elif k.arg in LIMITS:
+                        if _plain(v := _lit(k.value)):
+                            limits[str(k.arg)] = v
+                        else:
+                            limits.pop(str(k.arg), None)
+            if limits:
+                field = f"{cls}.{ast.unparse(s.target)}"
+                self.add(s, "constraint", field, **limits)
+                if (
+                    stringy
+                    and type(limits.get("max_length")) is int
+                    and limits["max_length"] >= 1
+                ):
+                    for name, text in LENGTH_SPLITS.items():
+                        detail = {"max_length": limits["max_length"], "input": text}
+                        self.add(s, "length_split", f"{field}#{name}", **detail)
         self._scoped(node, node.name)
 
     def _scoped(

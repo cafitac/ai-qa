@@ -4,11 +4,19 @@ from contextlib import nullcontext
 import pytest
 import yaml
 from test_mutants import NOW, env
-from test_reach import SPEC, notes_app, tool, write_run
+from test_reach import SPEC, notes_app, tool
 
 from aiqa import mutants
 from aiqa.cli import main as cli_main
 from aiqa.contracts import Config
+
+
+def write_run(root, *scenarios):
+    for sid, events in scenarios:
+        log = root / "scenarios" / f"frontend__{sid}" / "attempt-1" / "agent.jsonl"
+        log.parent.mkdir(parents=True)
+        log.write_text("\n".join(events) + "\n")
+    return root
 
 
 def run_cli(tmp_path, monkeypatch, run_dir, spec=SPEC, ready="READY", args=()):

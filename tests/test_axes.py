@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from aiqa.axes import extract_axes
+from aiqa.axes.fastapi_extractor import LENGTH_SPLITS
 from aiqa.cli import main
 
 FIXTURES = Path(__file__).parent / "fixtures" / "axes"
@@ -168,14 +169,24 @@ SPLIT_HEAD = "from fastapi import FastAPI\nfrom pydantic import BaseModel, Field
     [
         ("str", True),
         ("StrictStr", True),
+        ("typing.Text", True),
+        ("EmailStr", True),
         ("Optional[str]", True),
+        ("typing.Optional['str']", True),
+        ("Union[str, None]", True),
+        ("Union[str, 'None']", True),
         ("str | None", True),
         ("'str'", True),
         ("Annotated[str, 'x']", True),
+        ("Annotated[Optional[str], 'x']", True),
         ("List[str]", False),
         ("typing.List[str]", False),
+        ("Optional[list[str]]", False),
+        ("'list[str]'", False),
         ("Sequence[str]", False),
         ("Mapping[str, int]", False),
+        ("str | int", False),
+        ("Union[str, int]", False),
         ("int", False),
         ("bytes", False),
     ],
@@ -188,25 +199,41 @@ def test_length_splits_only_for_string_fields(
     )
     (tmp_path / "app.py").write_text(source)
     found = [c for c in extract_axes(tmp_path)["cells"] if c["kind"] == "length_split"]
-    assert bool(found) is derived
+    assert len(found) == derived * 5
     assert all(
         c["axis"] == "boundary" and c["detail"]["max_length"] == 5 for c in found
     )
-    assert len(found) == derived * 5
 
 
-def test_length_splits_read_annotated_field_metadata(tmp_path: Path) -> None:
+def test_length_split_key_and_detail_are_stable(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text(
-        f"{SPLIT_HEAD}class M(BaseModel):\n"
-        "    a: Annotated[str, Field(max_length=5)]\n"
-        "    b: Annotated[list[str], Field(max_length=5)]\n"
-        "    c: str = Field(min_length=1)\n"
+        f"{SPLIT_HEAD}class M(BaseModel):\n    f: str = Field(max_length=5)\n"
     )
+    cells = {c["key"]: c for c in extract_axes(tmp_path)["cells"]}
+    for name, text in LENGTH_SPLITS.items():
+        cell = cells[f"app.py::length_split:M.f#{name}"]
+        assert cell["detail"] == {"max_length": 5, "input": text}
+
+
+@pytest.mark.parametrize(
+    ("body", "fields"),
+    [
+        ("a: Annotated[str, Field(max_length=5)]", {"M.a"}),
+        ("a: Annotated[str, Field(max_length=5)] = Field(default='')", {"M.a"}),
+        ("a: Annotated[str, Field(min_length=1), Field(max_length=5)]", {"M.a"}),
+        ("a: 'Annotated[str, Field(max_length=5)]'", {"M.a"}),
+        ("a: Optional[Annotated[str, Field(max_length=5)]] = None", {"M.a"}),
+        ("a: Annotated[list[str], Field(max_length=5)]", set()),
+        ("a: Annotated[int, Field(max_length=5)]", set()),
+        ("a: str = Field(min_length=1)", set()),
+        ("a: str = Field(max_length=True)", set()),
+        ("a: str = Field(max_length=0)", set()),
+    ],
+)
+def test_length_splits_read_annotated_field_metadata(
+    tmp_path: Path, body: str, fields: set[str]
+) -> None:
+    (tmp_path / "app.py").write_text(f"{SPLIT_HEAD}class M(BaseModel):\n    {body}\n")
     out = extract_axes(tmp_path)["cells"]
-    split = {c["key"] for c in out if c["kind"] == "length_split"}
-    assert {k.split("#")[0] for k in split} == {"app.py::length_split:M.a"}
-    assert {c["subject"] for c in out if c["kind"] == "constraint"} == {
-        "M.a",
-        "M.b",
-        "M.c",
-    }
+    split = {c["subject"].split("#")[0] for c in out if c["kind"] == "length_split"}
+    assert split == fields

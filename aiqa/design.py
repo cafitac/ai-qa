@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-import re
 from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from .axes.fastapi_extractor import LENGTH_SPLITS
 from .contracts import (
     InvalidInput,
     ScenarioLinks,
@@ -19,7 +19,12 @@ from .contracts import (
 
 Doc = dict[str, Any]
 COVERING = ("in", "regression")
-SPLIT_KEY = re.compile(r"[^\n]+::length_split:[^\n]+#[a-z_]+")
+
+
+def in_scope(
+    file: str, prefix: str
+) -> bool:  # a path prefix on a path boundary: `app/notes` is not `app/notes_old/`
+    return file == prefix or file.startswith(prefix.rstrip("/") + "/")
 
 
 @dataclass(frozen=True)
@@ -109,7 +114,13 @@ def load_splits(path: Path) -> tuple[dict[str, str], set[str]]:
             raise InvalidInput("--axes holds a malformed cell")
         files.add(file)
         if cell["kind"] == "length_split":
-            if not SPLIT_KEY.fullmatch(key):
+            name = key.rpartition("#")[2]
+            if not (
+                name in LENGTH_SPLITS
+                and key.startswith(f"{file}::length_split:")
+                and len(key) <= 1000
+                and "\n" not in key
+            ):
                 raise InvalidInput(f"--axes cell {key} is not a length_split key")
             found[key] = file
     return found, files
@@ -133,7 +144,7 @@ def check_splits(
         for k in sorted((named | waived) - derived.keys())
     ]
     for key, file in sorted(derived.items()):
-        if (not scope or file.startswith(scope)) and key not in covered:
+        if (not scope or any(in_scope(file, p) for p in scope)) and key not in covered:
             gaps.append(Gap("G8_SPLIT_MISSING", key, key.rsplit("#", 1)[1]))
     return gaps
 
@@ -200,7 +211,7 @@ def run_check(
     if axes is not None:
         derived, files = load_splits(axes)
         scope = tuple(p.removeprefix("./") for p in axes_scope)
-        if not all(any(f.startswith(p) for f in files) for p in scope):
+        if not all(any(in_scope(f, p) for f in files) for p in scope):
             raise InvalidInput("--axes-scope matches no file in --axes")
         gaps += check_splits(design_doc, derived, scope)
     if linked is not None:

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+from .axes.fastapi_extractor import LENGTH_SPLITS
 from .contracts import (
     InvalidInput,
     ScenarioLinks,
@@ -18,6 +20,17 @@ from .contracts import (
 
 Doc = dict[str, Any]
 COVERING = ("in", "regression")
+
+
+UNSAFE = re.compile(
+    r"[\x00-\x1f\x7f\x85\u2028\u2029\ud800-\udfff]"
+)  # control characters and lone surrogates: no design could name the key
+
+
+def in_scope(
+    file: str, prefix: str
+) -> bool:  # a path prefix on a path boundary: `app/notes` is not `app/notes_old/`
+    return not prefix or file == prefix or file.startswith(prefix.rstrip("/") + "/")
 
 
 @dataclass(frozen=True)
@@ -50,6 +63,8 @@ def check(spec: Doc, design: Doc) -> list[Gap]:
         if c["req"] not in reqs:
             add("G7_DANGLING_REF", c["id"], f"unknown requirement {c['req']}")
     for w in waivers:
+        if "split" in w:  # checked against the axes in check_splits
+            continue
         ref = w.get("cell") or w["ac"]
         if ref not in (cell_ids if "cell" in w else acs):
             add("G7_DANGLING_REF", ref, f"waiver {w['card']} names an unknown id")
@@ -80,6 +95,66 @@ def check(spec: Doc, design: Doc) -> list[Gap]:
             and c["id"] not in waived_cells
         ):
             add("G5_OBSERVED_NO_EXPECTED", c["id"], "no expected and no waiver")
+    return gaps
+
+
+def load_splits(path: Path) -> tuple[dict[str, str], set[str]]:
+    """(`length_split` cell key -> source file, every cell's source file) from `aiqa axes` JSON."""
+    raw = load_json(path)
+    doc = cast(Doc, raw) if isinstance(raw, dict) else {}
+    cells = doc.get("cells")
+    if doc.get("apiVersion") != "ai-qa/axes/v1" or not isinstance(cells, list):
+        raise InvalidInput("--axes is not `aiqa axes` output")
+    if doc.get("axes") != "observed":
+        raise InvalidInput("--axes has no observed cells")
+    found: dict[str, str] = {}
+    files: set[str] = set()
+    for item in cast(list[Any], cells):
+        cell = cast(Doc, item) if isinstance(item, dict) else {}
+        key, file = cell.get("key"), cell.get("file")
+        if not (
+            isinstance(key, str)
+            and isinstance(file, str)
+            and isinstance(cell.get("kind"), str)
+        ):
+            raise InvalidInput("--axes holds a malformed cell")
+        files.add(file)
+        if cell["kind"] == "length_split":
+            name = key.rpartition("#")[2]
+            field = key.removeprefix(f"{file}::length_split:").removesuffix(f"#{name}")
+            if not (
+                name in LENGTH_SPLITS
+                and file
+                and field
+                and key == f"{file}::length_split:{field}#{name}"
+                and len(key) <= 1000
+                and not UNSAFE.search(key + file)
+            ):
+                raise InvalidInput(f"--axes cell {key!r} is not a length_split key")
+            found[key] = file
+    return found, files
+
+
+def check_splits(
+    design: Doc, derived: dict[str, str], scope: tuple[str, ...] = ()
+) -> list[Gap]:
+    """G8: every derived `length_split` cell under a `scope` path prefix (all, when empty) is covered by an in-scope
+    cell or waived. A reference to a split that does not exist is G7, whatever the cell's scope."""
+    named = {k for c in design["matrix"] for k in c.get("splits", [])}
+    waived = {w["split"] for w in design.get("waivers", []) if "split" in w}
+    covered = waived | {
+        k
+        for c in design["matrix"]
+        if c["scope"] in COVERING
+        for k in c.get("splits", [])
+    }
+    gaps = [
+        Gap("G7_DANGLING_REF", k, "split names no axes length_split cell")
+        for k in sorted((named | waived) - derived.keys())
+    ]
+    for key, file in sorted(derived.items()):
+        if (not scope or any(in_scope(file, p) for p in scope)) and key not in covered:
+            gaps.append(Gap("G8_SPLIT_MISSING", key, key.rsplit("#", 1)[1]))
     return gaps
 
 
@@ -126,13 +201,30 @@ def load_linkage(path: Path) -> list[ScenarioLinks]:
     return manifest_links(load_json(path))
 
 
-def run_check(spec: Path, design: Path, scenarios: Path | None, fmt: str) -> int:
+def run_check(
+    spec: Path,
+    design: Path,
+    scenarios: Path | None,
+    fmt: str,
+    axes: Path | None = None,
+    axes_scope: tuple[str, ...] = (),
+) -> int:
     spec_doc = validate("spec", load_json(spec))
     design_doc = validate("qa-design", load_yaml(design))
     if spec_doc["feature"] != design_doc["feature"]:
         raise InvalidInput("Spec and design name different features")
     linked = None if scenarios is None else load_linkage(scenarios)
     gaps = check(spec_doc, design_doc)
+    if axes_scope and axes is None:
+        raise InvalidInput("--axes-scope needs --axes")
+    if axes is not None:
+        derived, files = load_splits(axes)
+        scope = tuple(
+            "" if p in (".", "./") else p.removeprefix("./") for p in axes_scope
+        )
+        if not all(any(in_scope(f, p) for f in files) for p in scope):
+            raise InvalidInput("--axes-scope matches no file in --axes")
+        gaps += check_splits(design_doc, derived, scope)
     if linked is not None:
         gaps += check_linkage(design_doc, linked)
     if fmt == "json":

@@ -102,7 +102,7 @@ Optional `aiqa.yaml` / `--config FILE` configures budgets and output paths. `AIQ
 
 ## QA design check
 
-`aiqa design check --spec spec.json --design qa/design.yaml [--scenarios DIR|manifest.json] [--format json|text]`
+`aiqa design check --spec spec.json --design qa/design.yaml [--scenarios DIR|manifest.json] [--axes axes.json [--axes-scope PREFIX]] [--format json|text]`
 checks a QA design (`ai-qa/qa-design/v1`) against the acceptance criteria in a
 spec export (`ai-qa/spec/v1`) without any network or run state. Exit 0: no
 gaps; 1: gaps, each `{code, subject, detail}`; 2: invalid input (unreadable or
@@ -111,6 +111,16 @@ malformed files, schema violations, a spec and design that name different
 `G1_AC_UNKNOWN`, `G2_REQ_NO_CELL`, `G3_SCOPE_MISMATCH`, `G3_RISK_MISMATCH`,
 `G5_OBSERVED_NO_EXPECTED`, `G7_DUPLICATE_ID`, `G7_DANGLING_REF`. Schemas:
 `schemas/qa-design.schema.json`, `schemas/spec.schema.json`.
+
+With `--axes` (the output of `aiqa axes` on the same repository root; anything but
+observed cells, or a malformed cell, exits 2), rule `G8_SPLIT_MISSING` runs: each
+derived `length_split` cell must be listed in an `in`/`regression` matrix cell's
+`splits` (cell keys) or waived with a `{split, card, reason}` waiver. The scan covers
+the whole repository, so a design that owns only part of it passes `--axes-scope PREFIX`
+(repeatable repository path, a directory or a file, matched on path boundaries so `app/notes`
+is not `app/notes_old/`, a leading `./` ignored, `.` the whole repository; one that matches no file of `--axes` exits 2): only fields under those prefixes are required.
+A `splits` or waiver key that names no derived cell, in any cell scope, is
+`G7_DANGLING_REF`.
 
 With `--scenarios` (a directory of `<service>.yaml` scenario files, or a
 `qa/manifest.json`, `schemas/scenario-manifest.schema.json`) two more rules run:

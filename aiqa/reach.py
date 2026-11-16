@@ -1,0 +1,266 @@
+"""`aiqa mutant reach` (AQP-1 F3): no agent call, no ledger row. A baseline run's typed text is replayed to the baseline
+and mutant environments; an input answered differently reaches the defect."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+from collections.abc import Callable, Iterator
+from dataclasses import replace
+from datetime import datetime
+from pathlib import Path
+from typing import Any, cast
+
+from . import mutants
+from .contracts import (
+    Config,
+    EnvironmentDescriptor,
+    InvalidInput,
+    load_json,
+    load_yaml,
+    parse_json,
+    url_origin,
+    validate,
+)
+from .mutants import MISSING, NO_ANSWER, Http, dig, same
+
+PLACEHOLDER = "{input}"
+JS_SPACE = " \t\n\v\f\r\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"  # String.prototype.trim
+UNANSWERED = NO_ANSWER | {429}  # a rate limit says nothing about the defect
+
+
+def _get(value: object, key: str) -> object:
+    return cast(dict[str, object], value).get(key) if isinstance(value, dict) else None
+
+
+def tool_calls(log: Path) -> Iterator[tuple[str, dict[str, Any]]]:
+    """`(tool name, input)` of every tool_use in a stream-json `agent.jsonl` whose result did not fail; unreadable lines
+    are skipped. A failed type or click never reached the page, so replaying it would invent an input."""
+    uses: list[tuple[str, str, dict[str, Any]]] = []
+    failed: set[object] = set()
+    for line in log.read_text(encoding="utf-8", errors="replace").split("\n"):
+        try:
+            event = parse_json(line)
+        except InvalidInput:
+            continue
+        content = _get(_get(event, "message"), "content")
+        for block in cast(list[object], content) if isinstance(content, list) else []:
+            name, args, kind = (
+                _get(block, "name"),
+                _get(block, "input"),
+                _get(block, "type"),
+            )
+            if kind == "tool_use" and isinstance(name, str):
+                uses.append(
+                    (
+                        str(_get(block, "id")),
+                        name,
+                        cast(dict[str, Any], args) if isinstance(args, dict) else {},
+                    )
+                )
+            elif kind == "tool_result" and _get(block, "is_error") is True:
+                failed.add(_get(block, "tool_use_id"))
+    for use_id, name, args in uses:
+        if use_id not in failed:
+            yield name, args
+
+
+def typed_inputs(log: Path) -> list[str]:
+    """Texts typed and then submitted (`submit`, a click or Enter before the next navigation), one per field typed
+    since the last submit; a `slowly` type appends to its field."""
+    pending: dict[str, str] = {}
+    found: list[str] = []
+    for name, args in tool_calls(log):
+        tool, text = name.split("__")[-1], args.get("text")
+        field = str(args.get("target") or args.get("ref") or args.get("element"))
+        if tool == "browser_type" and isinstance(text, str):
+            kept = pending.get(field, "") if args.get("slowly") is True else ""
+            pending[field] = kept + text
+            if args.get("submit") is True:
+                found += pending.values()
+                pending = {}
+        elif tool == "browser_click" or (
+            tool == "browser_press_key" and args.get("key") == "Enter"
+        ):
+            found += pending.values()
+            pending = {}
+        elif tool in ("browser_navigate", "browser_navigate_back"):
+            pending = {}
+    return found
+
+
+def substitute(value: object, text: str) -> tuple[object, int]:
+    """`value` with every `{input}` replaced by `text`, and how many were replaced."""
+    if isinstance(value, str):
+        return value.replace(PLACEHOLDER, text), value.count(PLACEHOLDER)
+    if isinstance(value, list):
+        pairs = [substitute(v, text) for v in cast(list[object], value)]
+        return [v for v, _ in pairs], sum(n for _, n in pairs)
+    if isinstance(value, dict):
+        items = {
+            k: substitute(v, text) for k, v in cast(dict[str, object], value).items()
+        }
+        return {k: v for k, (v, _) in items.items()}, sum(n for _, n in items.values())
+    return value, 0
+
+
+def observe(
+    http: Http, base: str, spec: dict[str, Any], sent: str
+) -> tuple[int, list[object]]:
+    """The app's answer to one request: status plus the compared response fields (`MISSING` when absent)."""
+    request = spec["request"]
+    body, _ = substitute(request["json"], sent)
+    status, answer = http(request["method"], base + request["path"], body)
+    return status, [dig(answer, path) for path in spec["compare"]]
+
+
+def reach(
+    spec: dict[str, Any],
+    inputs: list[tuple[str, str]],
+    baseline: tuple[Http, str],
+    mutant: tuple[Http, str],
+) -> dict[str, Any]:
+    """`inputs` are (scenario, typed text) pairs; a text is sent once. REACHED when some input is answered differently,
+    UNREACHED only when every input was answered identically and the baseline accepted (2xx) one with a compared field
+    present, otherwise INCONCLUSIVE (no answer, 429, both sides reject, nothing compared) or NO_INPUT. A spec without
+    `trim`, a list `compare` and an `{input}` in the body could not differ, so it raises InvalidInput."""
+    compare = spec.get("compare")
+    plain = isinstance(compare, list) and all(
+        isinstance(p, str) for p in cast(list[Any], compare)
+    )
+    if not (isinstance(spec.get("trim"), bool) and plain and compare):
+        raise InvalidInput("The replay spec needs trim and a non-empty list compare")
+    request = spec.get("request")
+    if not (
+        isinstance(request, dict)
+        and isinstance(cast(dict[str, Any], request).get("json"), dict | list | str)
+        and isinstance(cast(dict[str, Any], request).get("method"), str)
+        and str(cast(dict[str, Any], request).get("path")).startswith("/")
+    ):
+        raise InvalidInput(
+            "The replay spec needs a request with method, path and a json body"
+        )
+    if not substitute(spec["request"]["json"], "")[1]:
+        raise InvalidInput(f"request.json must hold {PLACEHOLDER!r}")
+    rows: list[dict[str, Any]] = []
+    first: dict[str, str] = {}
+    for scenario, text in inputs:
+        sent = text.strip(JS_SPACE) if spec["trim"] else text
+        first.setdefault(sent, scenario)
+    for sent, scenario in first.items():
+        (b_status, b_fields), (m_status, m_fields) = (
+            observe(http, base, spec, sent) for http, base in (baseline, mutant)
+        )
+        answered = UNANSWERED.isdisjoint({b_status, m_status})
+        rows.append(
+            {
+                "scenario": scenario,
+                "chars": len(sent),
+                "baseline_status": b_status,
+                "mutant_status": m_status,
+                "answered": answered,
+                "compared": any(f is not MISSING for f in b_fields),
+                "reached": answered
+                and not (b_status == m_status and same(b_fields, m_fields)),
+            }
+        )
+    if any(r["reached"] for r in rows):
+        verdict = "REACHED"
+    elif not rows:
+        verdict = "NO_INPUT"
+    elif all(r["answered"] for r in rows) and any(
+        200 <= r["baseline_status"] < 300 and r["compared"] for r in rows
+    ):
+        verdict = "UNREACHED"
+    else:
+        verdict = "INCONCLUSIVE"
+    return {"classification": verdict, "inputs": rows}
+
+
+def agent_logs(run_dir: Path) -> Iterator[tuple[str, Path]]:
+    """`(label, agent.jsonl)` per attempt: `<run>/<service>/<scenario>@<attempt>`, attempts in numeric order. An
+    unreadable directory is an error: a partial walk would let UNREACHED rest on part of the run."""
+    if not run_dir.is_dir():
+        raise InvalidInput(f"Not a run directory: {run_dir}")
+    found: list[tuple[str, int, Path]] = []
+    try:
+        root = run_dir / "scenarios"
+        for scenario in sorted(root.iterdir()) if root.is_dir() else []:
+            for attempt in sorted(scenario.iterdir()) if scenario.is_dir() else []:
+                number = re.fullmatch(r"attempt-([0-9]+)", attempt.name)
+                if number and (attempt / "agent.jsonl").is_file():
+                    found.append(
+                        (scenario.name, int(number[1]), attempt / "agent.jsonl")
+                    )
+    except OSError:
+        raise InvalidInput(f"Cannot read {run_dir}") from None
+    for name, number, log in sorted(found):
+        yield f"{run_dir.resolve().name}/{name.replace('__', '/', 1)}@{number}", log
+
+
+def service(desc: EnvironmentDescriptor, name: str, at: datetime) -> tuple[str, str]:
+    """(public URL, commit) of `name` in a ready environment."""
+    if reasons := desc.unready_reasons(at):
+        raise InvalidInput(
+            f"{desc.data['name']}: environment not ready: {','.join(reasons)}"
+        )
+    for s in desc.data["services"]:
+        if s["name"] == name and s["publicUrl"]:
+            return str(s["publicUrl"]).rstrip("/"), str(s["commit"])
+    raise InvalidInput(f"{desc.data['name']}: service {name} is not in the environment")
+
+
+def run(args: argparse.Namespace, clock: Callable[[], datetime]) -> int:
+    """Exit 0 for REACHED or UNREACHED, 1 when the diagnosis could not decide, 2 for invalid input. Everything
+    that can be refused is refused before the Access session starts."""
+    spec = validate("reach-replay", load_yaml(args.replay))
+    try:
+        json.dumps(
+            spec, allow_nan=False
+        )  # YAML can load values (!!binary, !!set, aliases) that are not JSON
+    except (TypeError, ValueError, RecursionError):
+        raise InvalidInput("Replay spec holds a value that is not JSON") from None
+
+    def nothing(*_: Any) -> tuple[int, object]:
+        return 0, None
+
+    reach(
+        spec, [], (nothing, ""), (nothing, "")
+    )  # refuses a spec that could not differ
+    inputs: list[tuple[str, str]] = []
+    for run_dir in args.run:
+        for label, log in agent_logs(run_dir):
+            try:
+                inputs += [
+                    (f"{label}#{n}", t) for n, t in enumerate(typed_inputs(log), 1)
+                ]
+            except OSError:
+                raise InvalidInput(f"Cannot read {log}") from None
+    envs = [
+        service(EnvironmentDescriptor.parse(load_json(path)), spec["service"], clock())
+        for path in (args.baseline, args.mutant)
+    ]
+    if envs[0][1] == envs[1][1]:
+        raise InvalidInput("Baseline and mutant run the same commit of the service")
+    if not inputs:
+        report: dict[str, Any] = {
+            "classification": "NO_INPUT",
+            "inputs": [],
+            "baseline_commit": envs[0][1],
+            "mutant_commit": envs[1][1],
+        }
+        print(json.dumps({**report, "preflight_failures": {}}, indent=2))
+        return 1
+    from .secrets import resolve_access
+
+    config = Config.load(args.config)
+    if args.access:
+        config = replace(config, access_mode=args.access.replace("-", "_"))
+    failures: dict[str, str] = {}
+    origins = {url_origin(url) for url, _ in envs}
+    with mutants.playwright_http(resolve_access(config), origins, failures) as http:
+        report = reach(spec, inputs, (http, envs[0][0]), (http, envs[1][0]))
+    commits = {"baseline_commit": envs[0][1], "mutant_commit": envs[1][1]}
+    print(json.dumps({**report, **commits, "preflight_failures": failures}, indent=2))
+    return 0 if report["classification"] in ("REACHED", "UNREACHED") else 1

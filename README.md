@@ -137,6 +137,31 @@ least one of each and the tier budget holds (R1/R2 non-happy share at least 0.5)
 Output goes to stdout or `--out`; the result passes `design check --scenarios`.
 Exit 2 for invalid input, an unsatisfiable budget, or more than 50 scenarios.
 
+## MISSED mutant reach diagnosis
+
+`aiqa mutant reach --replay replay.yaml --run RUN_DIR [--run ...] --baseline base.json --mutant mut.json`
+tells, with no agent call and no ledger row, whether the inputs of a baseline run ever reach a
+seeded defect that the scenario set missed. It reads each `scenarios/*/attempt-*/agent.jsonl`
+under the run directories (Claude agent transcripts only; Codex runs yield no input) and keeps the text typed with `browser_type` and then submitted
+(`submit: true`, or a click or Enter before the next navigation; a later type into the same
+field replaces it unless `slowly`, and every field of a form is kept). Each distinct text is sent
+over HTTP to the baseline and the mutant environments (descriptor JSON of ready, existing
+environments, as in `mutant validate`; the two must run different commits of the service) and
+status and the response fields in `compare` are compared. All typed text is replayed, credentials
+included, and written to both environments: use runs of the field under test.
+
+The replay file (`schemas/reach-replay.schema.json`, `apiVersion: ai-qa/reach/v1`) names the
+`service`, the `request` (`method`, `path`, `json` holding the string `{input}`), `trim` (what
+the page does to the text before sending) and `compare`. Output JSON `classification`: `REACHED`
+(some input is answered differently: look at the oracle or the agent), `UNREACHED` (every input
+answered identically and the baseline accepted one with a compared field present: a coverage
+gap), `INCONCLUSIVE` (no answer, a rate limit, both sides reject, or nothing compared) or
+`NO_INPUT`, with per-input rows, both commits and `preflight_failures`. Exit 0 for the first two,
+1 otherwise, 2 for invalid input (a bad replay file, an unready or wrong environment, an
+unreadable run directory), plus the exit codes of any `aiqa` command for a browser or storage
+failure. Everything that can be refused is refused before the Access session starts. It does not
+change the mutant verdict rules.
+
 ## Observed axes
 
 `aiqa axes <repo-path>` statically reads a repository (Python `ast` only: nothing

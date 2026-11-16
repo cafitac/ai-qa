@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
-from . import mutants
+from . import metrics, mutants
 from .browser import BrowserFailure
 from .clock import default_clock
 from .contracts import Config, InvalidInput
@@ -61,6 +61,7 @@ def main(
     axes = commands.add_parser("axes")
     axes.add_argument("repo", type=Path)
     mutants.add_arguments(commands)
+    metrics.add_arguments(commands)
     from .defects.cli import add_arguments
 
     add_arguments(commands)
@@ -68,6 +69,8 @@ def main(
     try:
         if args.command == "mutant":
             return mutants.run(args, clock)
+        if args.command == "metrics":
+            return metrics.run(args)
         if args.command == "axes":
             from .axes import extract_axes
 

@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "apiVersion": {
+      "const": "ai-qa/reach/v1"
+    },
+    "service": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "request": {
+      "type": "object",
+      "properties": {
+        "method": {
+          "enum": [
+            "POST",
+            "PUT",
+            "PATCH"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^/[A-Za-z0-9/_.?=&-]{0,200}(?![\\s\\S])",
+          "not": {
+            "pattern": "\\.\\."
+          }
+        },
+        "json": {}
+      },
+      "required": [
+        "method",
+        "path",
+        "json"
+      ],
+      "additionalProperties": false
+    },
+    "trim": {
+      "type": "boolean"
+    },
+    "compare": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "minItems": 1
+    }
+  },
+  "required": [
+    "apiVersion",
+    "service",
+    "request",
+    "trim",
+    "compare"
+  ],
+  "additionalProperties": false
+}

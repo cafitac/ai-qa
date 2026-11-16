@@ -243,9 +243,20 @@ def add_arguments(commands: Any) -> None:
     )
     cmd.add_argument("--config", type=Path)
     cmd.add_argument("--access", choices=["auto", "session", "service-token"])
+    reach = sub.add_parser("reach")
+    reach.add_argument("--replay", type=Path, required=True)
+    reach.add_argument("--run", type=Path, action="append", required=True)
+    reach.add_argument("--baseline", type=Path, required=True)
+    reach.add_argument("--mutant", type=Path, required=True)
+    reach.add_argument("--config", type=Path)
+    reach.add_argument("--access", choices=["auto", "session", "service-token"])
 
 
 def run(args: argparse.Namespace, clock: Callable[[], datetime]) -> int:
+    if args.mutant_command == "reach":
+        from . import reach
+
+        return reach.run(args, clock)
     catalog = validate("mutant-catalog", load_yaml(args.catalog))
     try:
         json.dumps(catalog)  # YAML can load values (!!set, !!binary) that are not JSON

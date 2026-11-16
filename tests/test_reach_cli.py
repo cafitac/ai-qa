@@ -56,6 +56,9 @@ def test_cli_classifies_a_baseline_run(tmp_path, monkeypatch, capsys):
     assert out["inputs"][0]["scenario"] == "r2/frontend/c@1#1"
     assert (out["baseline_commit"], out["mutant_commit"]) == ("a" * 40, "b" * 40)
     (tmp_path / "empty").mkdir()
+    (
+        tmp_path / "r2" / "scenarios" / "frontend__c" / "attempt-x"
+    ).mkdir()  # a stray folder is skipped
     assert run_cli(tmp_path, monkeypatch, tmp_path / "empty") == 1  # no logs
     assert json.loads(capsys.readouterr().out)["classification"] == "NO_INPUT"
 
@@ -81,7 +84,8 @@ def test_cli_refuses_before_any_session_is_started(tmp_path, monkeypatch, capsys
     monkeypatch.setattr(mutants, "playwright_http", lambda *_: started.append(1))
     base = yaml.safe_dump(SPEC)
     cases = {
-        "not json": base.replace("trim: true", "trim: !!set {a}"),
+        "not json": base.replace("{input}", "!!binary aGk="),
+        "nan": base.replace("{input}", ".nan"),
         "no placeholder": base.replace("{input}", "fixed"),
         "dot-dot path": base.replace("/api/notes", "/api/../x"),
         "no such service": base.replace("backend", "other"),

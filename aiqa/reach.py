@@ -230,7 +230,13 @@ def run(args: argparse.Namespace, clock: Callable[[], datetime]) -> int:
     if envs[0][1] == envs[1][1]:
         raise InvalidInput("Baseline and mutant run the same commit of the service")
     if not inputs:
-        print(json.dumps({"classification": "NO_INPUT", "inputs": []}, indent=2))
+        report: dict[str, Any] = {
+            "classification": "NO_INPUT",
+            "inputs": [],
+            "baseline_commit": envs[0][1],
+            "mutant_commit": envs[1][1],
+        }
+        print(json.dumps({**report, "preflight_failures": {}}, indent=2))
         return 1
     from .secrets import resolve_access
 

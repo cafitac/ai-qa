@@ -142,7 +142,7 @@ Exit 2 for invalid input, an unsatisfiable budget, or more than 50 scenarios.
 `aiqa mutant reach --replay replay.yaml --run RUN_DIR [--run ...] --baseline base.json --mutant mut.json`
 tells, with no agent call and no ledger row, whether the inputs of a baseline run ever reach a
 seeded defect that the scenario set missed. It reads each `scenarios/*/attempt-*/agent.jsonl`
-under the run directories and keeps the text typed with `browser_type` and then submitted
+under the run directories (Claude agent transcripts only; Codex runs yield no input) and keeps the text typed with `browser_type` and then submitted
 (`submit: true`, or a click or Enter before the next navigation; a later type into the same
 field replaces it unless `slowly`, and every field of a form is kept). Each distinct text is sent
 over HTTP to the baseline and the mutant environments (descriptor JSON of ready, existing

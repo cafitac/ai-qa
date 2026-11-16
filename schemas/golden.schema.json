@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "qa/golden.json: golden-scenario dictionary keyed by pattern. Entries come only from PASSED results of approved runs of sealed DEV features (agent-skills qa_golden.py add); retrieval is by exact pattern.",
+  "$defs": {
+    "text": {"type": "string", "minLength": 1, "maxLength": 500}
+  },
+  "type": "object",
+  "properties": {
+    "apiVersion": {"const": "ai-qa/golden/v1"},
+    "project": {"type": "string", "minLength": 1, "maxLength": 200},
+    "entries": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string", "pattern": "^golden-[1-9][0-9]{0,5}(?![\\s\\S])"},
+          "pattern": {"enum": ["list", "form-validation", "pagination", "role-gate", "state-transition", "empty-state"]},
+          "scenario": {
+            "type": "object",
+            "properties": {
+              "title": {"$ref": "#/$defs/text"},
+              "start": {"type": "string", "pattern": "^/(?!/)[^\\s\\x00-\\x1f\\x7f\\\\]*(?![\\s\\S])", "maxLength": 500},
+              "steps": {"type": "array", "items": {"$ref": "#/$defs/text"}, "minItems": 1, "maxItems": 20},
+              "expect": {"type": "array", "items": {"$ref": "#/$defs/text"}, "minItems": 1, "maxItems": 10},
+              "kind": {"enum": ["happy", "negative", "boundary"]}
+            },
+            "required": ["title", "steps", "expect", "kind"],
+            "additionalProperties": false
+          },
+          "source": {
+            "type": "object",
+            "properties": {
+              "feature": {"type": "string", "minLength": 1, "maxLength": 200},
+              "runSha": {"description": "qa_run.content_sha of the approved run", "type": "string", "pattern": "^[0-9a-f]{64}(?![\\s\\S])"},
+              "scenario": {"description": "service/scenario id", "type": "string", "pattern": "^[a-z][a-z0-9-]{1,20}/[a-z][a-z0-9-]{1,40}(?![\\s\\S])"}
+            },
+            "required": ["feature", "runSha", "scenario"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["id", "pattern", "scenario", "source"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["apiVersion", "project", "entries"],
+  "additionalProperties": false
+}

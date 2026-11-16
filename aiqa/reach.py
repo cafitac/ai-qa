@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections.abc import Callable, Iterator
 from dataclasses import replace
 from datetime import datetime
@@ -174,15 +175,24 @@ def reach(
 
 
 def agent_logs(run_dir: Path) -> Iterator[tuple[str, Path]]:
-    """`(label, agent.jsonl)` per attempt: `<run>/<service>/<scenario>@<attempt>`, attempts in numeric order."""
+    """`(label, agent.jsonl)` per attempt: `<run>/<service>/<scenario>@<attempt>`, attempts in numeric order. An
+    unreadable directory is an error: a partial walk would let UNREACHED rest on part of the run."""
     if not run_dir.is_dir():
         raise InvalidInput(f"Not a run directory: {run_dir}")
-    logs = run_dir.glob("scenarios/*/attempt-*/agent.jsonl")
-    for log in sorted(
-        logs, key=lambda p: (p.parts[-3], int(p.parts[-2].rpartition("-")[2] or 0))
-    ):
-        scenario = log.parts[-3].replace("__", "/", 1)
-        yield f"{run_dir.name}/{scenario}@{log.parts[-2].rpartition('-')[2]}", log
+    found: list[tuple[str, int, Path]] = []
+    try:
+        root = run_dir / "scenarios"
+        for scenario in sorted(root.iterdir()) if root.is_dir() else []:
+            for attempt in sorted(scenario.iterdir()) if scenario.is_dir() else []:
+                number = re.fullmatch(r"attempt-([0-9]+)", attempt.name)
+                if number and (attempt / "agent.jsonl").is_file():
+                    found.append(
+                        (scenario.name, int(number[1]), attempt / "agent.jsonl")
+                    )
+    except OSError:
+        raise InvalidInput(f"Cannot read {run_dir}") from None
+    for name, number, log in sorted(found):
+        yield f"{run_dir.resolve().name}/{name.replace('__', '/', 1)}@{number}", log
 
 
 def service(desc: EnvironmentDescriptor, name: str, at: datetime) -> tuple[str, str]:
@@ -203,7 +213,7 @@ def run(args: argparse.Namespace, clock: Callable[[], datetime]) -> int:
     spec = validate("reach-replay", load_yaml(args.replay))
     try:
         json.dumps(
-            spec
+            spec, allow_nan=False
         )  # YAML can load values (!!binary, !!set, aliases) that are not JSON
     except (TypeError, ValueError, RecursionError):
         raise InvalidInput("Replay spec holds a value that is not JSON") from None

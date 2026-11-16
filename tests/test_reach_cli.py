@@ -85,14 +85,27 @@ def test_cli_refuses_before_any_session_is_started(tmp_path, monkeypatch, capsys
     base = yaml.safe_dump(SPEC)
     cases = {
         "not json": base.replace("{input}", "!!binary aGk="),
-        "nan": base.replace("{input}", ".nan"),
         "no placeholder": base.replace("{input}", "fixed"),
         "dot-dot path": base.replace("/api/notes", "/api/../x"),
         "no such service": base.replace("backend", "other"),
     }
-    for spec in cases.values():
+    nan = {
+        **SPEC,
+        "request": {**SPEC["request"], "json": {"text": "{input}", "n": float("nan")}},
+    }
+    for spec in [*cases.values(), nan]:
         assert run_cli(tmp_path, monkeypatch, run, spec) == 2
     assert run_cli(tmp_path, monkeypatch, tmp_path / "nowhere") == 2
     assert run_cli(tmp_path, monkeypatch, run, same_commit=True) == 2
     assert "same commit" in capsys.readouterr().out
     assert started == []
+
+
+def test_cli_refuses_an_unreadable_run_directory(tmp_path, monkeypatch):
+    run = typed(tmp_path, "r", "a")
+    locked = run / "scenarios" / "frontend__c"
+    locked.chmod(0)
+    try:
+        assert run_cli(tmp_path, monkeypatch, run) == 2
+    finally:
+        locked.chmod(0o755)

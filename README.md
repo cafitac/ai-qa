@@ -159,7 +159,7 @@ to observe. A field counts as a string when its annotation is `str`, `StrictStr`
 `max_length` counts items). Limits come from `Annotated[T, Field(...)]` metadata
 and the assigned `Field(...)`, the assignment winning, as in pydantic. Not read:
 `include_router` prefixes, router-level dependencies, `Query`/`Path` and
-`constr(...)` limits (class-body `Field(...)` limits only), import aliases other
+`constr(...)` limits and type aliases (class-body `Field(...)` and `StringConstraints(...)` limits only), import aliases other
 than the router constructors, `_ignore_` enum contents, and non-literal
 `api_route` `methods` or `Security` `scopes`. Dependencies are matched by name.
 

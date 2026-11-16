@@ -39,6 +39,10 @@ def test_fastapi_fixture_yields_every_observed_axis() -> None:
         ("validation", "constraint", "OrderCreate.title"),
         ("flag", "feature_flag", "SHIP_MODE"),
         ("flag", "feature_flag", "NOTIFIER_URL"),
+    } | {
+        ("boundary", "length_split", f"OrderCreate.title#{n}")
+        for n in ("at_max", "over_max", "multibyte_near_max")
+        + ("normalized_fits", "whitespace_preserved")
     }
     detail = {c["kind"]: c["detail"] for c in out["cells"] if "detail" in c}
     assert detail["enum"] == {"values": ["NEW", "PAID", "SHIPPED"]}
@@ -154,3 +158,55 @@ def test_api_route_scopes_dup_keys_limits_opts_and_status_bounds(
     assert by[("role_check", "GET /n requires get_user")] == {"scopes": ["x", "y"]}
     assert not any(s.endswith(" /k") for k, s in by if k == "route")
     assert ("route", "GET /d") in by and ("route", "POST /d") not in by
+
+
+SPLIT_HEAD = "from fastapi import FastAPI\nfrom pydantic import BaseModel, Field\napp = FastAPI()\n"
+
+
+@pytest.mark.parametrize(
+    ("annotation", "derived"),
+    [
+        ("str", True),
+        ("StrictStr", True),
+        ("Optional[str]", True),
+        ("str | None", True),
+        ("'str'", True),
+        ("Annotated[str, 'x']", True),
+        ("List[str]", False),
+        ("typing.List[str]", False),
+        ("Sequence[str]", False),
+        ("Mapping[str, int]", False),
+        ("int", False),
+        ("bytes", False),
+    ],
+)
+def test_length_splits_only_for_string_fields(
+    tmp_path: Path, annotation: str, derived: bool
+) -> None:
+    source = (
+        f"{SPLIT_HEAD}class M(BaseModel):\n    f: {annotation} = Field(max_length=5)\n"
+    )
+    (tmp_path / "app.py").write_text(source)
+    found = [c for c in extract_axes(tmp_path)["cells"] if c["kind"] == "length_split"]
+    assert bool(found) is derived
+    assert all(
+        c["axis"] == "boundary" and c["detail"]["max_length"] == 5 for c in found
+    )
+    assert len(found) == derived * 5
+
+
+def test_length_splits_read_annotated_field_metadata(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        f"{SPLIT_HEAD}class M(BaseModel):\n"
+        "    a: Annotated[str, Field(max_length=5)]\n"
+        "    b: Annotated[list[str], Field(max_length=5)]\n"
+        "    c: str = Field(min_length=1)\n"
+    )
+    out = extract_axes(tmp_path)["cells"]
+    split = {c["key"] for c in out if c["kind"] == "length_split"}
+    assert {k.split("#")[0] for k in split} == {"app.py::length_split:M.a"}
+    assert {c["subject"] for c in out if c["kind"] == "constraint"} == {
+        "M.a",
+        "M.b",
+        "M.c",
+    }

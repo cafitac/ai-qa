@@ -19,28 +19,7 @@ from .contracts import (
 
 Doc = dict[str, Any]
 COVERING = ("in", "regression")
-# An AC that says stored text is kept as submitted: a preservation phrase and a text subject in the same AC, and no
-# other negation once the phrases are taken out ("not stored verbatim", "isn't preserved", "저장되지 않는다").
-KEPT = re.compile(
-    r"\b(unchanged|unmodified|unaltered|verbatim|identical|preserved|no change"
-    r"|as (submitted|entered|typed)|exactly (as|the)|not (be )?(changed|modified|altered))\b"
-    r"|변경되지 않|변경 없|수정 없|입력한 대로|그대로",
-    re.IGNORECASE,
-)
-SUBJECT = re.compile(
-    r"\b(text|content|string|input|memo|note|message|title|body|whitespace|spaces?|newlines?)\b"
-    r"|텍스트|내용|문자|입력|메모|공백|줄바꿈",
-    re.IGNORECASE,
-)
-NEGATION = re.compile(r"\b(not|never|no longer)\b|n't|않|못", re.IGNORECASE)
-
-
-def keeps_text(ac: str) -> bool:
-    return bool(
-        KEPT.search(ac)
-        and SUBJECT.search(ac)
-        and not NEGATION.search(KEPT.sub(" ", ac))
-    )
+SPLIT_KEY = re.compile(r"[^\n]+::length_split:[^\n]+#[a-z_]+")
 
 
 @dataclass(frozen=True)
@@ -108,8 +87,8 @@ def check(spec: Doc, design: Doc) -> list[Gap]:
     return gaps
 
 
-def load_splits(path: Path) -> dict[str, tuple[str, str]]:
-    """`length_split` cell key -> (source file, required input), from `aiqa axes` JSON."""
+def load_splits(path: Path) -> tuple[dict[str, str], set[str]]:
+    """(`length_split` cell key -> source file, every cell's source file) from `aiqa axes` JSON."""
     raw = load_json(path)
     doc = cast(Doc, raw) if isinstance(raw, dict) else {}
     cells = doc.get("cells")
@@ -117,47 +96,45 @@ def load_splits(path: Path) -> dict[str, tuple[str, str]]:
         raise InvalidInput("--axes is not `aiqa axes` output")
     if doc.get("axes") != "observed":
         raise InvalidInput("--axes has no observed cells")
-    found: dict[str, tuple[str, str]] = {}
+    found: dict[str, str] = {}
+    files: set[str] = set()
     for item in cast(list[Any], cells):
         cell = cast(Doc, item) if isinstance(item, dict) else {}
-        detail = cell.get("detail")
-        need = cast(Doc, detail).get("input") if isinstance(detail, dict) else None
-        ok = isinstance(cell.get("key"), str) and isinstance(cell.get("file"), str)
-        if not ok or (cell.get("kind") == "length_split" and not isinstance(need, str)):
+        key, file = cell.get("key"), cell.get("file")
+        if not (
+            isinstance(key, str)
+            and isinstance(file, str)
+            and isinstance(cell.get("kind"), str)
+        ):
             raise InvalidInput("--axes holds a malformed cell")
-        if cell.get("kind") == "length_split":
-            found[cell["key"]] = (cell["file"], cast(str, need))
-    return found
+        files.add(file)
+        if cell["kind"] == "length_split":
+            if not SPLIT_KEY.fullmatch(key):
+                raise InvalidInput(f"--axes cell {key} is not a length_split key")
+            found[key] = file
+    return found, files
 
 
 def check_splits(
-    spec: Doc,
-    design: Doc,
-    derived: dict[str, tuple[str, str]],
-    scope: tuple[str, ...] = (),
+    design: Doc, derived: dict[str, str], scope: tuple[str, ...] = ()
 ) -> list[Gap]:
     """G8: every derived `length_split` cell under a `scope` path prefix (all, when empty) is covered by an in-scope
     cell or waived. A reference to a split that does not exist is G7, whatever the cell's scope."""
     named = {k for c in design["matrix"] for k in c.get("splits", [])}
-    covered = {
+    waived = {w["split"] for w in design.get("waivers", []) if "split" in w}
+    covered = waived | {
         k
         for c in design["matrix"]
         if c["scope"] in COVERING
         for k in c.get("splits", [])
     }
-    waived = {w["split"] for w in design.get("waivers", []) if "split" in w}
-    unchanged = any(keeps_text(a["text"]) for a in spec["acs"] if a["scope"] == "in")
     gaps = [
         Gap("G7_DANGLING_REF", k, "split names no axes length_split cell")
         for k in sorted((named | waived) - derived.keys())
     ]
-    for key, (file, need) in sorted(derived.items()):
-        if scope and not file.startswith(scope):
-            continue
-        if key.endswith("#whitespace_preserved") and not unchanged:
-            continue  # only a no-change AC makes it a requirement
-        if key not in covered | waived:
-            gaps.append(Gap("G8_SPLIT_MISSING", key, need))
+    for key, file in sorted(derived.items()):
+        if (not scope or file.startswith(scope)) and key not in covered:
+            gaps.append(Gap("G8_SPLIT_MISSING", key, key.rsplit("#", 1)[1]))
     return gaps
 
 
@@ -218,8 +195,14 @@ def run_check(
         raise InvalidInput("Spec and design name different features")
     linked = None if scenarios is None else load_linkage(scenarios)
     gaps = check(spec_doc, design_doc)
+    if axes_scope and axes is None:
+        raise InvalidInput("--axes-scope needs --axes")
     if axes is not None:
-        gaps += check_splits(spec_doc, design_doc, load_splits(axes), axes_scope)
+        derived, files = load_splits(axes)
+        scope = tuple(p.removeprefix("./") for p in axes_scope)
+        if not all(any(f.startswith(p) for f in files) for p in scope):
+            raise InvalidInput("--axes-scope matches no file in --axes")
+        gaps += check_splits(design_doc, derived, scope)
     if linked is not None:
         gaps += check_linkage(design_doc, linked)
     if fmt == "json":

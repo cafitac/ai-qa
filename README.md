@@ -113,15 +113,14 @@ malformed files, schema violations, a spec and design that name different
 `schemas/qa-design.schema.json`, `schemas/spec.schema.json`.
 
 With `--axes` (the output of `aiqa axes` on the same repository root; anything but
-observed cells exits 2), rule `G8_SPLIT_MISSING` runs: each derived `length_split`
-cell must be listed in an `in`/`regression` matrix cell's `splits` (cell keys) or
-waived with a `{split, card, reason}` waiver. `whitespace_preserved` is required only
-when an in-scope AC names a text subject (text, memo, whitespace, 텍스트, ...) and a
-preservation phrase (unchanged, verbatim, identical, as submitted, 그대로, ...) without
-another negation. The scan covers the whole repository, so a design that owns only
-part of it passes `--axes-scope PREFIX` (repeatable path prefix such as `app/notes/`):
-only fields under those prefixes are required. A `splits` or waiver key that names
-no derived cell, in any cell scope, is `G7_DANGLING_REF`.
+observed cells, or a malformed cell, exits 2), rule `G8_SPLIT_MISSING` runs: each
+derived `length_split` cell must be listed in an `in`/`regression` matrix cell's
+`splits` (cell keys) or waived with a `{split, card, reason}` waiver. The scan covers
+the whole repository, so a design that owns only part of it passes `--axes-scope PREFIX`
+(repeatable path prefix such as `app/notes/`, a leading `./` ignored; a prefix that
+matches no file of `--axes` exits 2): only fields under those prefixes are required.
+A `splits` or waiver key that names no derived cell, in any cell scope, is
+`G7_DANGLING_REF`.
 
 With `--scenarios` (a directory of `<service>.yaml` scenario files, or a
 `qa/manifest.json`, `schemas/scenario-manifest.schema.json`) two more rules run:

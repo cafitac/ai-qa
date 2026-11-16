@@ -1,13 +1,28 @@
-"""MISSED-mutant reach diagnosis core (AQP-1 F3; `aiqa mutant reach` wires it next): no agent call, no ledger row. A baseline
-run's typed text is replayed to the baseline and mutant environments; an input answered differently reaches the defect."""
+"""`aiqa mutant reach` (AQP-1 F3): no agent call, no ledger row. A baseline run's typed text is replayed to the baseline
+and mutant environments; an input answered differently reaches the defect."""
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import argparse
+import json
+import re
+from collections.abc import Callable, Iterator
+from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
-from .contracts import InvalidInput, parse_json
+from . import mutants
+from .contracts import (
+    Config,
+    EnvironmentDescriptor,
+    InvalidInput,
+    load_json,
+    load_yaml,
+    parse_json,
+    url_origin,
+    validate,
+)
 from .mutants import MISSING, NO_ANSWER, Http, dig, same
 
 PLACEHOLDER = "{input}"
@@ -161,3 +176,91 @@ def reach(
     else:
         verdict = "INCONCLUSIVE"
     return {"classification": verdict, "inputs": rows}
+
+
+def agent_logs(run_dir: Path) -> Iterator[tuple[str, Path]]:
+    """`(label, agent.jsonl)` per attempt: `<run>/<service>/<scenario>@<attempt>`, attempts in numeric order. An
+    unreadable directory is an error: a partial walk would let UNREACHED rest on part of the run."""
+    if not run_dir.is_dir():
+        raise InvalidInput(f"Not a run directory: {run_dir}")
+    found: list[tuple[str, int, Path]] = []
+    try:
+        root = run_dir / "scenarios"
+        for scenario in sorted(root.iterdir()) if root.is_dir() else []:
+            for attempt in sorted(scenario.iterdir()) if scenario.is_dir() else []:
+                number = re.fullmatch(r"attempt-([0-9]+)", attempt.name)
+                if number and (attempt / "agent.jsonl").is_file():
+                    found.append(
+                        (scenario.name, int(number[1]), attempt / "agent.jsonl")
+                    )
+    except OSError:
+        raise InvalidInput(f"Cannot read {run_dir}") from None
+    for name, number, log in sorted(found):
+        yield f"{run_dir.resolve().name}/{name.replace('__', '/', 1)}@{number}", log
+
+
+def service(desc: EnvironmentDescriptor, name: str, at: datetime) -> tuple[str, str]:
+    """(public URL, commit) of `name` in a ready environment."""
+    if reasons := desc.unready_reasons(at):
+        raise InvalidInput(
+            f"{desc.data['name']}: environment not ready: {','.join(reasons)}"
+        )
+    for s in desc.data["services"]:
+        if s["name"] == name and s["publicUrl"]:
+            return str(s["publicUrl"]).rstrip("/"), str(s["commit"])
+    raise InvalidInput(f"{desc.data['name']}: service {name} is not in the environment")
+
+
+def run(args: argparse.Namespace, clock: Callable[[], datetime]) -> int:
+    """Exit 0 for REACHED or UNREACHED, 1 when the diagnosis could not decide, 2 for invalid input. Everything
+    that can be refused is refused before the Access session starts."""
+    spec = validate("reach-replay", load_yaml(args.replay))
+    try:
+        json.dumps(
+            spec, allow_nan=False
+        )  # YAML can load values (!!binary, !!set, aliases) that are not JSON
+    except (TypeError, ValueError, RecursionError):
+        raise InvalidInput("Replay spec holds a value that is not JSON") from None
+
+    def nothing(*_: Any) -> tuple[int, object]:
+        return 0, None
+
+    reach(
+        spec, [], (nothing, ""), (nothing, "")
+    )  # refuses a spec that could not differ
+    inputs: list[tuple[str, str]] = []
+    for run_dir in args.run:
+        for label, log in agent_logs(run_dir):
+            try:
+                inputs += [
+                    (f"{label}#{n}", t) for n, t in enumerate(typed_inputs(log), 1)
+                ]
+            except OSError:
+                raise InvalidInput(f"Cannot read {log}") from None
+    envs = [
+        service(EnvironmentDescriptor.parse(load_json(path)), spec["service"], clock())
+        for path in (args.baseline, args.mutant)
+    ]
+    if envs[0][1] == envs[1][1]:
+        raise InvalidInput("Baseline and mutant run the same commit of the service")
+    if not inputs:
+        report: dict[str, Any] = {
+            "classification": "NO_INPUT",
+            "inputs": [],
+            "baseline_commit": envs[0][1],
+            "mutant_commit": envs[1][1],
+        }
+        print(json.dumps({**report, "preflight_failures": {}}, indent=2))
+        return 1
+    from .secrets import resolve_access
+
+    config = Config.load(args.config)
+    if args.access:
+        config = replace(config, access_mode=args.access.replace("-", "_"))
+    failures: dict[str, str] = {}
+    origins = {url_origin(url) for url, _ in envs}
+    with mutants.playwright_http(resolve_access(config), origins, failures) as http:
+        report = reach(spec, inputs, (http, envs[0][0]), (http, envs[1][0]))
+    commits = {"baseline_commit": envs[0][1], "mutant_commit": envs[1][1]}
+    print(json.dumps({**report, **commits, "preflight_failures": failures}, indent=2))
+    return 0 if report["classification"] in ("REACHED", "UNREACHED") else 1

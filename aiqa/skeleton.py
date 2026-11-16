@@ -9,6 +9,8 @@ from .design import COVERING, Doc
 
 MIN_NEGATIVE = MIN_BOUNDARY = 1
 NON_HAPPY_SHARE = 0.5
+MAX_AC = 20  # scenario-file `ac` maxItems
+MAX_TEXT = 500  # scenario-file `expect` item length
 SUFFIX = {"happy": "", "negative": "-neg", "boundary": "-bnd"}
 VARIANTS = {
     "happy": ("nominal values",),
@@ -21,13 +23,34 @@ PREFERRED = {
 }
 
 
+def _require_references(design: Doc) -> None:
+    """The expander needs unique ids, known requirements and a schema-sized `ac` list."""
+    reqs: list[Doc] = design["requirements"]
+    for kind, items in (("requirement", reqs), ("cell", design["matrix"])):
+        for i, n in Counter(x["id"] for x in items).items():
+            if n > 1:
+                raise InvalidInput(f"Duplicate {kind} id {i}")
+    known = {r["id"] for r in reqs}
+    for c in design["matrix"]:
+        if c["req"] not in known:
+            raise InvalidInput(f"Cell {c['id']} names unknown requirement {c['req']}")
+    for r in reqs:
+        if len(r["ac"]) > MAX_AC:
+            raise InvalidInput(f"{r['id']} links more than {MAX_AC} ACs")
+
+
+def _order(cell_id: str) -> tuple[int, str]:
+    return int(cell_id[2:]), cell_id
+
+
 def expand(design: Doc) -> list[Doc]:
     """Expand validated design cells into deterministic mechanical scenarios."""
+    _require_references(design)
     waived = {w["cell"] for w in design.get("waivers", []) if "cell" in w}
     live = [
         c for c in design["matrix"] if c["scope"] in COVERING and c["id"] not in waived
     ]
-    cells = sorted(live, key=lambda c: int(c["id"][2:]))
+    cells = sorted(live, key=lambda c: _order(c["id"]))
     reqs = {r["id"]: r for r in design["requirements"]}
     counts: Counter[tuple[str, str]] = Counter()
     result: list[Doc] = []
@@ -40,10 +63,13 @@ def expand(design: Doc) -> list[Doc]:
         expected = cell.get("expected") or "Verify the expected cell behavior."
         result.append(
             {
-                "id": f"sk-c-{int(cell['id'][2:])}{suffix}",
+                "id": f"sk-{cell['id'].lower()}{suffix}",
                 "title": f"{cell['req']} {cell['axis']}: {variant}",
                 "steps": [f"Exercise {cell['axis']} for {cell['req']} with {variant}."],
-                "expect": [expected[:500]],
+                "expect": [
+                    expected[i : i + MAX_TEXT]
+                    for i in range(0, len(expected), MAX_TEXT)
+                ],
                 "tags": [cell["req"], cell["axis"]],
                 "ac": sorted(reqs[cell["req"]]["ac"]),
                 "cells": [cell["id"]],
@@ -95,7 +121,7 @@ def expand(design: Doc) -> list[Doc]:
             slot([c for c in mine if c["req"] == target], kind)
     # Stable sorting preserves insertion ordinals within each cell and kind.
     return sorted(
-        result, key=lambda s: (int(s["cells"][0][2:]), tuple(VARIANTS).index(s["kind"]))
+        result, key=lambda s: (*_order(s["cells"][0]), tuple(VARIANTS).index(s["kind"]))
     )
 
 

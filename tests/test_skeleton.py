@@ -54,9 +54,8 @@ def test_ac3_and_determinism():
         kinds = {s["kind"] for s in scenarios if req["id"] in s["tags"]}
         assert {"negative", "boundary"} <= kinds
     assert sum(s["kind"] != "happy" for s in scenarios) >= len(scenarios) / 2
-    assert all(
-        s["origin"] == "skeleton" and len(s["expect"][0]) == 500 for s in scenarios
-    )
+    assert all(s["origin"] == "skeleton" for s in scenarios)
+    assert "".join(scenarios[0]["expect"]) == "Expected " * 100  # 900 chars, 2 items
     ids = [s["id"] for s in scenarios]
     assert len(ids) == len(set(ids))
     assert "sk-c-4-bnd" in ids
@@ -91,6 +90,30 @@ def test_exemptions_and_strict_budget():
     d["budget"]["R1"]["min"] = 51
     with pytest.raises(InvalidInput, match="50-scenario"):
         skeleton_file(d)
+
+
+def test_rejects_unsound_references(tmp_path):
+    d = design()
+    d["matrix"].append({**d["matrix"][0], "id": "C-01"})
+    ids = [s["id"] for s in expand(d)]
+    assert {"sk-c-1", "sk-c-01"} <= set(ids) and len(ids) == len(set(ids))
+    for mutate, match in (
+        (lambda d: d["matrix"].append(dict(d["matrix"][0])), "Duplicate cell"),
+        (lambda d: d["matrix"][0].update(req="REQ-9"), "unknown requirement"),
+        (
+            lambda d: d["requirements"][0].update(ac=[f"AC{i}" for i in range(21)]),
+            "ACs",
+        ),
+    ):
+        bad = design()
+        mutate(bad)
+        with pytest.raises(InvalidInput, match=match):
+            expand(bad)
+    path = tmp_path / "bad.json"
+    bad = design()
+    bad["matrix"][0]["req"] = "REQ-9"
+    path.write_text(json.dumps(bad))
+    assert cli_main(["design", "skeleton", "--design", str(path)]) == 2
 
 
 def test_cli_round_trip(tmp_path, capsys):

@@ -17,6 +17,14 @@ APP = HEAD + "class Note(BaseModel):\n    text: str = Field(max_length=500)\n"
 OTHER = "class U(BaseModel):\n    n: str = Field(max_length=9)\n"
 KEY = "app.py::length_split:Note.text#"
 EVERY = tuple(LENGTH_SPLITS)
+BAD_KEYS = (
+    "app.py::length_split:#at_max",
+    "app.py::length_split:N\r#at_max",
+    "app.py::length_split:N\u2028#at_max",
+    "app.py::length_split:N\ud800#at_max",
+    "app.py::length_split:" + "N" * 1000 + "#at_max",
+    "app.py::length_split:Note.text#nope",
+)
 RISKS = {
     r: dict.fromkeys(("min", "minNegative", "minBoundary", "nonHappyShare"), 0)
     for r in ("R1", "R2", "R3", "R4")
@@ -64,6 +72,16 @@ def test_dangling_references_in_any_cell_and_the_scope_prefix(tmp_path: Path) ->
         f"app.py::length_split:U.n#{s}" for s in EVERY
     }
     assert check_splits(design(*EVERY), derived, ("elsewhere/",)) == []
+    assert (
+        check_splits(design(), derived, ("app.py/", "nowhere")) == []
+    )  # app.py is a file, not a directory
+    deep = {
+        "a/notes/x.py::length_split:C.f#at_max": "a/notes/x.py",
+        "a/notes_old/y.py::length_split:C.f#at_max": "a/notes_old/y.py",
+    }
+    assert found(check_splits(design(), deep, ("a/notes",))) == {
+        "a/notes/x.py::length_split:C.f#at_max"
+    }
     for scope in ("in", "hold"):  # the scope filters requirements, never references
         gaps = check_splits(
             design(*EVERY, "nope", scope=scope), derived, ("elsewhere/",)
@@ -156,6 +174,8 @@ def test_cli_reports_the_gap_and_rejects_bad_input(
     )  # a leading ./ is ignored
     base["matrix"][0]["splits"] = [KEY + s for s in EVERY]
     (tmp_path / "design.yaml").write_text(json.dumps(base))
+    assert main([*with_axes, "--axes-scope", "."]) == 1  # the repository root
+    assert main([*with_axes, "--axes-scope", "ap"]) == 2  # a path, not a string prefix
     assert main([*with_axes, "--axes-scope", "app.py"]) == 1  # U.n is under app.py too
     assert main(with_axes) == 1
     for bad in (
@@ -173,6 +193,9 @@ def test_cli_reports_the_gap_and_rejects_bad_input(
         {**good, "cells": [None]},
         {**good, "cells": [{"key": "k", "file": "f"}]},
         {**good, "cells": [{**cell, "key": "x"}]},
+        *({**good, "cells": [{**cell, "key": k}]} for k in BAD_KEYS),
+        {**good, "cells": [{**cell, "file": ""}]},
+        {**good, "cells": [{**cell, "file": "b.py"}]},
     ):
         axes.write_text(json.dumps(bad))
         assert main(with_axes) == 2

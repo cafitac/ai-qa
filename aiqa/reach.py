@@ -13,13 +13,13 @@ from typing import Any, cast
 from .contracts import InvalidInput, parse_json
 from .mutants import NO_ANSWER, Http, dig, same
 
-SUBMIT = ("browser_click", "browser_press_key")
 PLACEHOLDER = "{input}"
+UNANSWERED = NO_ANSWER | {429}  # a rate limit says nothing about the defect
 
 
 def tool_calls(log: Path) -> Iterator[tuple[str, dict[str, Any]]]:
     """`(tool name, input)` of every tool_use in a stream-json `agent.jsonl`; unreadable lines are skipped."""
-    for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+    for line in log.read_text(encoding="utf-8", errors="replace").split("\n"):
         try:
             event = parse_json(line)
         except InvalidInput:
@@ -46,74 +46,95 @@ def tool_calls(log: Path) -> Iterator[tuple[str, dict[str, Any]]]:
 
 
 def typed_inputs(log: Path) -> list[str]:
-    """Texts typed into the page and then submitted (a click or key press before the next type or navigation)."""
+    """Texts typed into the page and then submitted: `browser_type` with `submit`, or a click or Enter before the next
+    type or navigation."""
     pending: str | None = None
     found: list[str] = []
     for name, args in tool_calls(log):
-        if name.endswith("browser_type") and isinstance(args.get("text"), str):
-            pending = args["text"]
-        elif name.endswith(SUBMIT) and pending is not None:
+        tool, text = name.split("__")[-1], args.get("text")
+        if tool == "browser_type" and isinstance(text, str):
+            if args.get("submit") is True:
+                found.append(text)
+            pending = None if args.get("submit") is True else text
+        elif pending is not None and (
+            tool == "browser_click"
+            or (tool == "browser_press_key" and args.get("key") == "Enter")
+        ):
             found.append(pending)
             pending = None
-        elif name.endswith("browser_navigate"):
+        elif tool in ("browser_navigate", "browser_navigate_back"):
             pending = None
     return found
 
 
-def substitute(value: object, text: str) -> object:
-    if value == PLACEHOLDER:
-        return text
+def substitute(value: object, text: str) -> tuple[object, int]:
+    """`value` with every `{input}` replaced by `text`, and how many were replaced."""
+    if isinstance(value, str):
+        return value.replace(PLACEHOLDER, text), value.count(PLACEHOLDER)
     if isinstance(value, list):
-        return [substitute(v, text) for v in cast(list[object], value)]
+        pairs = [substitute(v, text) for v in cast(list[object], value)]
+        return [v for v, _ in pairs], sum(n for _, n in pairs)
     if isinstance(value, dict):
-        return {
+        items = {
             k: substitute(v, text) for k, v in cast(dict[str, object], value).items()
         }
-    return value
+        return {k: v for k, (v, _) in items.items()}, sum(n for _, n in items.values())
+    return value, 0
 
 
 def observe(
-    http: Http, base: str, spec: dict[str, Any], text: str
+    http: Http, base: str, spec: dict[str, Any], sent: str
 ) -> tuple[int, list[object]]:
-    """The app's answer to one input: status plus the compared response fields (`MISSING` when absent)."""
-    sent = text.strip() if spec.get("trim", True) else text
+    """The app's answer to one request: status plus the compared response fields (`MISSING` when absent)."""
     request = spec["request"]
-    status, body = http(
-        request["method"], base + request["path"], substitute(request["json"], sent)
-    )
-    return status, [dig(body, path) for path in spec.get("compare", [])]
+    body, _ = substitute(request["json"], sent)
+    status, answer = http(request["method"], base + request["path"], body)
+    return status, [dig(answer, path) for path in spec["compare"]]
 
 
 def reach(
     spec: dict[str, Any],
-    inputs: dict[str, str],
+    inputs: list[tuple[str, str]],
     baseline: tuple[Http, str],
     mutant: tuple[Http, str],
 ) -> dict[str, Any]:
-    """`inputs`: scenario id -> typed text. REACHED when some input is answered differently, and
-    UNREACHED only when every input was answered identically by both sides."""
+    """`inputs`: (scenario, typed text) pairs; a text typed twice is sent once. Needs `trim` (what the page does before
+    sending) and a non-empty `compare` (response fields) in `spec`, and an `{input}` in its request body, or it raises
+    InvalidInput, because a replay that cannot differ would read as UNREACHED. REACHED when some input is answered
+    differently. UNREACHED only when every input was answered by both sides, identically, and the baseline accepted
+    (2xx) at least one: a replay both sides reject proves nothing. Each sent input is written to both environments."""
+    if not (isinstance(spec.get("trim"), bool) and spec.get("compare")):
+        raise InvalidInput("The replay spec needs trim and a non-empty compare")
+    if not substitute(spec["request"]["json"], "")[1]:
+        raise InvalidInput(f"request.json must hold {PLACEHOLDER!r}")
     rows: list[dict[str, Any]] = []
-    for scenario, text in inputs.items():
+    first: dict[str, str] = {}
+    for scenario, text in inputs:
+        first.setdefault(text, scenario)
+    for text, scenario in first.items():
+        sent = text.strip() if spec["trim"] else text
         (b_status, b_fields), (m_status, m_fields) = (
-            observe(http, base, spec, text) for http, base in (baseline, mutant)
+            observe(http, base, spec, sent) for http, base in (baseline, mutant)
         )
-        answered = NO_ANSWER.isdisjoint({b_status, m_status})
-        differs = answered and not (b_status == m_status and same(b_fields, m_fields))
+        answered = UNANSWERED.isdisjoint({b_status, m_status})
         rows.append(
             {
                 "scenario": scenario,
-                "chars": len(text.strip() if spec.get("trim", True) else text),
+                "chars": len(sent),
                 "baseline_status": b_status,
                 "mutant_status": m_status,
                 "answered": answered,
-                "reached": differs,
+                "reached": answered
+                and not (b_status == m_status and same(b_fields, m_fields)),
             }
         )
     if any(r["reached"] for r in rows):
         verdict = "REACHED"
     elif not rows:
         verdict = "NO_INPUT"
-    elif all(r["answered"] for r in rows):
+    elif all(r["answered"] for r in rows) and any(
+        200 <= r["baseline_status"] < 300 for r in rows
+    ):
         verdict = "UNREACHED"
     else:
         verdict = "INCONCLUSIVE"

@@ -1,12 +1,16 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from aiqa import reach
+from aiqa.contracts import InvalidInput
 
 SPEC = {
     "apiVersion": "ai-qa/reach/v1",
     "service": "backend",
     "request": {"method": "POST", "path": "/api/notes", "json": {"text": "{input}"}},
+    "trim": True,
     "compare": ["text"],
 }
 
@@ -32,7 +36,9 @@ def tool(name, **args):
         "name": f"mcp__playwright__browser_{name}",
         "input": args,
     }
-    return json.dumps({"type": "assistant", "message": {"content": [block]}})
+    return json.dumps(
+        {"type": "assistant", "message": {"content": [block]}}, ensure_ascii=False
+    )
 
 
 def write_run(root: Path, *scenarios) -> Path:
@@ -45,7 +51,7 @@ def write_run(root: Path, *scenarios) -> Path:
 
 
 def classify(texts, defect):
-    inputs = {f"s{n}": t for n, t in enumerate(texts)}
+    inputs = [(f"s{n}", t) for n, t in enumerate(texts)]
     return reach.reach(
         SPEC, inputs, (notes_app(), "https://b"), (notes_app(defect), "https://m")
     )
@@ -63,16 +69,33 @@ def test_only_submitted_text_counts(tmp_path):
                 tool("type", target="e1", text="abandoned"),
                 tool("navigate", url="u"),
                 tool("type", target="e1", text="by key"),
+                tool("press_key", key="Tab"),
                 tool("press_key", key="Enter"),
+                tool("type", target="e1", text="with submit", submit=True),
+                tool("snapshot"),
+                tool("type", target="e1", text="back"),
+                tool("navigate_back"),
+                tool("click", target="e2"),
                 tool("type", target="e1", text="never submitted"),
             ],
         ),
+        ("b", ['{"message": {"content": "text"}}', "[1]", "7", tool("type", text=5)]),
+        (
+            "c",
+            [tool("type", text="a\u2028b\x85c"), tool("click"), tool("type", text="z")],
+        ),
     )
-    ((scenario, log),) = reach.agent_logs(run)
-    assert scenario == "frontend/a" and reach.typed_inputs(log) == [
+    logs = dict(reach.agent_logs(run))
+    assert list(logs) == ["frontend/a", "frontend/b", "frontend/c"]
+    assert reach.typed_inputs(logs["frontend/c"]) == [
+        "a\u2028b\x85c"
+    ]  # JSONL splits on newlines only
+    assert reach.typed_inputs(logs["frontend/a"]) == [
         "  sent  ",
         "by key",
+        "with submit",
     ]
+    assert reach.typed_inputs(logs["frontend/b"]) == []
 
 
 def test_ascii_set_is_unreached_and_matching_inputs_are_reached():
@@ -93,9 +116,33 @@ def test_ascii_set_is_unreached_and_matching_inputs_are_reached():
 def test_no_input_no_answer_and_unreached_need_every_input_answered():
     assert classify([], "bytes")["classification"] == "NO_INPUT"
     down = lambda *_: (0, None)
-    out = reach.reach(SPEC, {"s": "x"}, (notes_app(), "b"), (down, "m"))
+    out = reach.reach(SPEC, [("s", "x")], (notes_app(), "b"), (down, "m"))
     assert out["classification"] == "INCONCLUSIVE" and not out["inputs"][0]["answered"]
+    limited = lambda *_: (429, None)
+    assert reach.reach(SPEC, [("s", "x")], (limited, "b"), (limited, "m"))[
+        "classification"
+    ] == ("INCONCLUSIVE")
     assert classify(["x", "한" * 200], "bytes")["classification"] == "REACHED"
+    assert classify(["x" * 501, "한" * 200], "bytes")["classification"] == "REACHED"
+
+
+def test_a_replay_both_sides_reject_proves_nothing():
+    rejects = lambda *_: (422, {"text": "x"})
+    out = reach.reach(SPEC, [("s", "x")], (rejects, "b"), (rejects, "m"))
+    assert out["classification"] == "INCONCLUSIVE" and out["inputs"][0]["answered"]
+
+
+def test_one_request_per_distinct_text_across_scenarios_and_attempts():
+    seen = []
+
+    def http(method, url, body):
+        seen.append(body["text"])
+        return 201, {"text": body["text"]}
+
+    pairs = [("a", "x"), ("a", "y"), ("b", "x")]
+    out = reach.reach(SPEC, pairs, (http, ""), (http, ""))
+    assert seen == ["x", "x", "y", "y"] and out["classification"] == "UNREACHED"
+    assert [r["scenario"] for r in out["inputs"]] == ["a", "a"]
 
 
 def test_trim_and_placeholder_substitution():
@@ -103,12 +150,27 @@ def test_trim_and_placeholder_substitution():
 
     def http(method, url, body):
         seen.append(body)
-        return 201, {}
+        return 201, {"text": "t"}
 
     spec = {
         **SPEC,
         "trim": False,
-        "request": {**SPEC["request"], "json": {"a": ["{input}", 1], "b": "{input}x"}},
+        "request": {**SPEC["request"], "json": {"a": ["{input}", 1], "b": "<{input}>"}},
     }
-    reach.reach(spec, {"s": " y "}, (http, ""), (http, ""))
-    assert seen[0] == {"a": [" y ", 1], "b": "{input}x"}
+    reach.reach(spec, [("s", " y ")], (http, ""), (http, ""))
+    assert seen[0] == {"a": [" y ", 1], "b": "< y >"}
+    reach.reach(SPEC, [("s", " y ")], (http, ""), (http, ""))
+    assert seen[2] == {"text": "y"}
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"trim": None},
+        {"compare": []},
+        {"request": {**SPEC["request"], "json": {"text": "fixed"}}},
+    ],
+)
+def test_a_replay_that_cannot_differ_is_refused(bad):
+    with pytest.raises(InvalidInput):
+        reach.reach({**SPEC, **bad}, [("s", "x")], (notes_app(), ""), (notes_app(), ""))

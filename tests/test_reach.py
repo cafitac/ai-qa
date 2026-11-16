@@ -16,7 +16,6 @@ SPEC = {
 
 
 def notes_app(defect=None):
-    """The notes API's validator with one optional seeded defect (as in the missed-mutant analysis)."""
 
     def http(method, url, body):
         text = body["text"]
@@ -41,13 +40,10 @@ def tool(name, **args):
     )
 
 
-def write_run(root: Path, *scenarios) -> Path:
-    """A baseline run directory whose agent logs a fake agent left behind; `scenarios` are (id, [events])."""
-    for sid, events in scenarios:
-        log = root / "scenarios" / f"frontend__{sid}" / "attempt-1" / "agent.jsonl"
-        log.parent.mkdir(parents=True)
-        log.write_text("not json\n" + "\n".join(events) + "\n")
-    return root
+def typed(tmp_path: Path, *events: str) -> list[str]:
+    log = tmp_path / "agent.jsonl"
+    log.write_text("not json\n" + "\n".join(events) + "\n")
+    return reach.typed_inputs(log)
 
 
 def classify(texts, defect):
@@ -58,44 +54,40 @@ def classify(texts, defect):
 
 
 def test_only_submitted_text_counts(tmp_path):
-    run = write_run(
-        tmp_path,
-        (
-            "a",
-            [
-                tool("navigate", url="u"),
-                tool("type", target="e1", text="  sent  "),
-                tool("click", target="e2"),
-                tool("type", target="e1", text="abandoned"),
-                tool("navigate", url="u"),
-                tool("type", target="e1", text="by key"),
-                tool("press_key", key="Tab"),
-                tool("press_key", key="Enter"),
-                tool("type", target="e1", text="with submit", submit=True),
-                tool("snapshot"),
-                tool("type", target="e1", text="back"),
-                tool("navigate_back"),
-                tool("click", target="e2"),
-                tool("type", target="e1", text="never submitted"),
-            ],
-        ),
-        ("b", ['{"message": {"content": "text"}}', "[1]", "7", tool("type", text=5)]),
-        (
-            "c",
-            [tool("type", text="a\u2028b\x85c"), tool("click"), tool("type", text="z")],
-        ),
-    )
-    logs = dict(reach.agent_logs(run))
-    assert list(logs) == ["frontend/a", "frontend/b", "frontend/c"]
-    assert reach.typed_inputs(logs["frontend/c"]) == [
-        "a\u2028b\x85c"
-    ]  # JSONL splits on newlines only
-    assert reach.typed_inputs(logs["frontend/a"]) == [
-        "  sent  ",
-        "by key",
-        "with submit",
+    submit = [tool("type", target="e1", text="by key"), tool("press_key", key="Tab")]
+    form = [
+        tool("type", target="title", text="two"),
+        tool("type", target="body", text="fields "),
     ]
-    assert reach.typed_inputs(logs["frontend/b"]) == []
+    got = typed(
+        tmp_path,
+        tool("navigate", url="u"),
+        tool("type", target="e1", text="  sent  "),
+        tool("click", target="e2"),
+        tool("type", target="e1", text="abandoned"),
+        tool("navigate", url="u"),
+        *submit,
+        tool("press_key", key="Enter"),
+        tool("type", target="e1", text="with submit", submit=True),
+        tool("snapshot"),
+        tool("type", target="e1", text="back"),
+        tool("navigate_back"),
+        tool("click", target="e2"),
+        *form,
+        tool("type", target="body", text="more", slowly=True),
+        tool("click", target="save"),
+        tool("type", target="e1", text="never submitted"),
+    )
+    assert got == ["  sent  ", "by key", "with submit", "two", "fields more"]
+
+
+def test_unreadable_events_are_skipped_and_jsonl_splits_on_newlines_only(tmp_path):
+    junk = ['{"message": {"content": "text"}}', "[1]", "7", tool("type", text=5)]
+    assert typed(tmp_path, *junk, tool("click")) == []
+    text = "a\u2028b\x85c"
+    assert typed(
+        tmp_path, tool("type", text=text), tool("click"), tool("type", text="z")
+    ) == [text]
 
 
 def test_ascii_set_is_unreached_and_matching_inputs_are_reached():
@@ -103,33 +95,29 @@ def test_ascii_set_is_unreached_and_matching_inputs_are_reached():
     assert [classify(ascii_set, d)["classification"] for d in ("bytes", "fold")] == [
         "UNREACHED"
     ] * 2
-    assert classify(["한" * 200], "bytes")["classification"] == "REACHED"
-    folded = classify(
-        ["a" * 200 + "  " + "b" * 299 + " "], "fold"
-    )  # 501 raw once trimmed, 500 folded
-    assert folded["classification"] == "REACHED" and folded["inputs"][0]["reached"]
-    assert (
-        classify(["a\n\nb"], "fold")["classification"] == "REACHED"
-    )  # only the stored text differs
-
-
-def test_no_input_no_answer_and_unreached_need_every_input_answered():
-    assert classify([], "bytes")["classification"] == "NO_INPUT"
-    down = lambda *_: (0, None)
-    out = reach.reach(SPEC, [("s", "x")], (notes_app(), "b"), (down, "m"))
-    assert out["classification"] == "INCONCLUSIVE" and not out["inputs"][0]["answered"]
-    limited = lambda *_: (429, None)
-    assert reach.reach(SPEC, [("s", "x")], (limited, "b"), (limited, "m"))[
-        "classification"
-    ] == ("INCONCLUSIVE")
     assert classify(["x", "한" * 200], "bytes")["classification"] == "REACHED"
-    assert classify(["x" * 501, "한" * 200], "bytes")["classification"] == "REACHED"
+    folded = classify(["a" * 200 + "  " + "b" * 299 + " "], "fold")  # 500 once folded
+    assert folded["classification"] == "REACHED" and folded["inputs"][0]["reached"]
+    assert classify(["a\n\nb"], "fold")["classification"] == "REACHED"  # stored text
 
 
-def test_a_replay_both_sides_reject_proves_nothing():
-    rejects = lambda *_: (422, {"text": "x"})
-    out = reach.reach(SPEC, [("s", "x")], (rejects, "b"), (rejects, "m"))
-    assert out["classification"] == "INCONCLUSIVE" and out["inputs"][0]["answered"]
+@pytest.mark.parametrize(
+    ("base", "mutant", "answer"),
+    [
+        (notes_app(), lambda *_: (0, None), "INCONCLUSIVE"),  # no answer
+        (lambda *_: (429, None),) * 2 + ("INCONCLUSIVE",),  # rate limited
+        (lambda *_: (422, {"text": "x"}),) * 2 + ("INCONCLUSIVE",),  # both reject
+        (lambda *_: (201, None),) * 2 + ("INCONCLUSIVE",),  # nothing to compare
+    ],
+)
+def test_unreached_needs_both_sides_to_answer_and_something_compared(
+    base, mutant, answer
+):
+    assert (
+        reach.reach(SPEC, [("s", "x")], (base, "b"), (mutant, "m"))["classification"]
+        == answer
+    )
+    assert classify([], "bytes")["classification"] == "NO_INPUT"
 
 
 def test_one_request_per_distinct_text_across_scenarios_and_attempts():
@@ -139,10 +127,12 @@ def test_one_request_per_distinct_text_across_scenarios_and_attempts():
         seen.append(body["text"])
         return 201, {"text": body["text"]}
 
-    pairs = [("a", "x"), ("a", "y"), ("b", "x")]
+    pairs = [("a", "x"), ("a", "y"), ("b", "x"), ("b", " x\ufeff"), ("b", "\x1fy")]
     out = reach.reach(SPEC, pairs, (http, ""), (http, ""))
-    assert seen == ["x", "x", "y", "y"] and out["classification"] == "UNREACHED"
-    assert [r["scenario"] for r in out["inputs"]] == ["a", "a"]
+    # JS trim drops U+FEFF but not U+001F
+    assert seen == ["x", "x", "y", "y", "\x1fy", "\x1fy"]
+    assert out["classification"] == "UNREACHED"
+    assert [r["scenario"] for r in out["inputs"]] == ["a", "a", "b"]
 
 
 def test_trim_and_placeholder_substitution():
@@ -158,16 +148,16 @@ def test_trim_and_placeholder_substitution():
         "request": {**SPEC["request"], "json": {"a": ["{input}", 1], "b": "<{input}>"}},
     }
     reach.reach(spec, [("s", " y ")], (http, ""), (http, ""))
-    assert seen[0] == {"a": [" y ", 1], "b": "< y >"}
     reach.reach(SPEC, [("s", " y ")], (http, ""), (http, ""))
-    assert seen[2] == {"text": "y"}
+    assert seen[::2] == [{"a": [" y ", 1], "b": "< y >"}, {"text": "y"}]
 
 
 @pytest.mark.parametrize(
     "bad",
     [
         {"trim": None},
-        {"compare": []},
+        {"compare": "text"},
+        {"compare": [1]},
         {"request": {**SPEC["request"], "json": {"text": "fixed"}}},
     ],
 )

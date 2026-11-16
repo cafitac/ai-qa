@@ -150,46 +150,73 @@ def reach(
 
 
 def agent_logs(run_dir: Path) -> Iterator[tuple[str, Path]]:
-    for log in sorted(run_dir.glob("scenarios/*/attempt-*/agent.jsonl")):
-        yield log.parts[-3].replace("__", "/", 1), log
+    """`(label, agent.jsonl)` per attempt: `<run>/<service>/<scenario>@<attempt>`, attempts in numeric order."""
+    if not run_dir.is_dir():
+        raise InvalidInput(f"Not a run directory: {run_dir}")
+    logs = run_dir.glob("scenarios/*/attempt-*/agent.jsonl")
+    for log in sorted(
+        logs, key=lambda p: (p.parts[-3], int(p.parts[-2].rpartition("-")[2] or 0))
+    ):
+        scenario = log.parts[-3].replace("__", "/", 1)
+        yield f"{run_dir.name}/{scenario}@{log.parts[-2].rpartition('-')[2]}", log
 
 
-def service_url(desc: EnvironmentDescriptor, service: str, at: datetime) -> str:
+def service(desc: EnvironmentDescriptor, name: str, at: datetime) -> tuple[str, str]:
+    """(public URL, commit) of `name` in a ready environment."""
     if reasons := desc.unready_reasons(at):
         raise InvalidInput(
             f"{desc.data['name']}: environment not ready: {','.join(reasons)}"
         )
     for s in desc.data["services"]:
-        if s["name"] == service and s["publicUrl"]:
-            return str(s["publicUrl"]).rstrip("/")
-    raise InvalidInput(
-        f"{desc.data['name']}: service {service} is not in the environment"
-    )
+        if s["name"] == name and s["publicUrl"]:
+            return str(s["publicUrl"]).rstrip("/"), str(s["commit"])
+    raise InvalidInput(f"{desc.data['name']}: service {name} is not in the environment")
 
 
 def run(args: argparse.Namespace, clock: Callable[[], datetime]) -> int:
-    """Exit 0 for REACHED or UNREACHED, 1 when the diagnosis could not decide, 2 for invalid input."""
+    """Exit 0 for REACHED or UNREACHED, 1 when the diagnosis could not decide, 2 for invalid input. Everything
+    that can be refused is refused before the Access session starts."""
     spec = validate("reach-replay", load_yaml(args.replay))
-    inputs = [
-        (f"{scenario}#{n}", text)
-        for run_dir in args.run
-        for scenario, log in agent_logs(run_dir)
-        for n, text in enumerate(typed_inputs(log), 1)
-    ]
-    urls = [
-        service_url(
-            EnvironmentDescriptor.parse(load_json(path)), spec["service"], clock()
-        )
+    try:
+        json.dumps(
+            spec
+        )  # YAML can load values (!!binary, !!set, aliases) that are not JSON
+    except (TypeError, ValueError, RecursionError):
+        raise InvalidInput("Replay spec holds a value that is not JSON") from None
+
+    def nothing(*_: Any) -> tuple[int, object]:
+        return 0, None
+
+    reach(
+        spec, [], (nothing, ""), (nothing, "")
+    )  # refuses a spec that could not differ
+    inputs: list[tuple[str, str]] = []
+    for run_dir in args.run:
+        for label, log in agent_logs(run_dir):
+            try:
+                inputs += [
+                    (f"{label}#{n}", t) for n, t in enumerate(typed_inputs(log), 1)
+                ]
+            except OSError:
+                raise InvalidInput(f"Cannot read {log}") from None
+    envs = [
+        service(EnvironmentDescriptor.parse(load_json(path)), spec["service"], clock())
         for path in (args.baseline, args.mutant)
     ]
+    if envs[0][1] == envs[1][1]:
+        raise InvalidInput("Baseline and mutant run the same commit of the service")
+    if not inputs:
+        print(json.dumps({"classification": "NO_INPUT", "inputs": []}, indent=2))
+        return 1
     from .secrets import resolve_access
 
     config = Config.load(args.config)
     if args.access:
         config = replace(config, access_mode=args.access.replace("-", "_"))
     failures: dict[str, str] = {}
-    origins = {url_origin(u) for u in urls}
+    origins = {url_origin(url) for url, _ in envs}
     with mutants.playwright_http(resolve_access(config), origins, failures) as http:
-        report = reach(spec, inputs, (http, urls[0]), (http, urls[1]))
-    print(json.dumps({**report, "preflight_failures": failures}, indent=2))
+        report = reach(spec, inputs, (http, envs[0][0]), (http, envs[1][0]))
+    commits = {"baseline_commit": envs[0][1], "mutant_commit": envs[1][1]}
+    print(json.dumps({**report, **commits, "preflight_failures": failures}, indent=2))
     return 0 if report["classification"] in ("REACHED", "UNREACHED") else 1

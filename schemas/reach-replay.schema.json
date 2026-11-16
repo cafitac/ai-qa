@@ -22,8 +22,10 @@
         },
         "path": {
           "type": "string",
-          "pattern": "^/\\S*(?![\\s\\S])",
-          "maxLength": 500
+          "pattern": "^/[A-Za-z0-9/_.?=&-]{0,200}(?![\\s\\S])",
+          "not": {
+            "pattern": "\\.\\."
+          }
         },
         "json": {}
       },

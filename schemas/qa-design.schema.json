@@ -4,7 +4,7 @@
     "ac": {"type": "string", "pattern": "^AC[0-9]{1,4}(?![\\s\\S])"},
     "req": {"type": "string", "pattern": "^REQ-[0-9]{1,4}(?![\\s\\S])"},
     "cell": {"type": "string", "pattern": "^C-[0-9]{1,5}(?![\\s\\S])"},
-    "split": {"type": "string", "maxLength": 1000, "pattern": "^[^\\n]+::length_split:[^\\n]+#(at_max|over_max|multibyte_near_max|normalized_fits|whitespace_preserved)(?![\\s\\S])"},
+    "split": {"type": "string", "maxLength": 1000, "pattern": "^[^\\u0000-\\u001f\\u007f\\u0085\\u2028\\u2029]+::length_split:[^\\u0000-\\u001f\\u007f\\u0085\\u2028\\u2029]+#(at_max|over_max|multibyte_near_max|normalized_fits|whitespace_preserved)(?![\\s\\S])"},
     "scope": {"enum": ["in", "regression", "hold", "excluded"]},
     "risk": {"enum": ["R1", "R2", "R3", "R4"]},
     "count": {"type": "integer", "minimum": 0, "maximum": 1000},

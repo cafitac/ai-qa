@@ -118,7 +118,7 @@ derived `length_split` cell must be listed in an `in`/`regression` matrix cell's
 `splits` (cell keys) or waived with a `{split, card, reason}` waiver. The scan covers
 the whole repository, so a design that owns only part of it passes `--axes-scope PREFIX`
 (repeatable repository path, a directory or a file, matched on path boundaries so `app/notes`
-is not `app/notes_old/`, a leading `./` ignored; one that matches no file of `--axes` exits 2): only fields under those prefixes are required.
+is not `app/notes_old/`, a leading `./` ignored, `.` the whole repository; one that matches no file of `--axes` exits 2): only fields under those prefixes are required.
 A `splits` or waiver key that names no derived cell, in any cell scope, is
 `G7_DANGLING_REF`.
 

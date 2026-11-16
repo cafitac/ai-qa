@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -21,10 +22,15 @@ Doc = dict[str, Any]
 COVERING = ("in", "regression")
 
 
+UNSAFE = re.compile(
+    r"[\x00-\x1f\x7f\x85\u2028\u2029\ud800-\udfff]"
+)  # control characters and lone surrogates: no design could name the key
+
+
 def in_scope(
     file: str, prefix: str
 ) -> bool:  # a path prefix on a path boundary: `app/notes` is not `app/notes_old/`
-    return file == prefix or file.startswith(prefix.rstrip("/") + "/")
+    return not prefix or file == prefix or file.startswith(prefix.rstrip("/") + "/")
 
 
 @dataclass(frozen=True)
@@ -115,13 +121,16 @@ def load_splits(path: Path) -> tuple[dict[str, str], set[str]]:
         files.add(file)
         if cell["kind"] == "length_split":
             name = key.rpartition("#")[2]
+            field = key.removeprefix(f"{file}::length_split:").removesuffix(f"#{name}")
             if not (
                 name in LENGTH_SPLITS
-                and key.startswith(f"{file}::length_split:")
+                and file
+                and field
+                and key == f"{file}::length_split:{field}#{name}"
                 and len(key) <= 1000
-                and "\n" not in key
+                and not UNSAFE.search(key + file)
             ):
-                raise InvalidInput(f"--axes cell {key} is not a length_split key")
+                raise InvalidInput(f"--axes cell {key!r} is not a length_split key")
             found[key] = file
     return found, files
 
@@ -210,7 +219,9 @@ def run_check(
         raise InvalidInput("--axes-scope needs --axes")
     if axes is not None:
         derived, files = load_splits(axes)
-        scope = tuple(p.removeprefix("./") for p in axes_scope)
+        scope = tuple(
+            "" if p in (".", "./") else p.removeprefix("./") for p in axes_scope
+        )
         if not all(any(in_scope(f, p) for f in files) for p in scope):
             raise InvalidInput("--axes-scope matches no file in --axes")
         gaps += check_splits(design_doc, derived, scope)

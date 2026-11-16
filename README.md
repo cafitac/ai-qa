@@ -166,8 +166,8 @@ also yields five `length_split` cells (`at_max`, `over_max`, `multibyte_near_max
 to observe. A field counts as a string when its annotation is `str`, `StrictStr`,
 `SecretStr`, `EmailStr` or `Text`, alone or inside quotes, `Optional`, `Union`,
 `| None` or `Annotated`; `list[str]` and other containers do not (there
-`max_length` counts items). Limits come from `Annotated[T, Field(...)]` metadata
-and the assigned `Field(...)`, the assignment winning, as in pydantic. Not read:
+`max_length` counts items). Limits come from `Annotated[T, Field(...)]` or
+`StringConstraints(...)` metadata and the assigned `Field(...)`, the assignment winning, as in pydantic. Not read:
 `include_router` prefixes, router-level dependencies, `Query`/`Path` and
 `constr(...)` limits and type aliases (class-body `Field(...)` and `StringConstraints(...)` limits only), import aliases other
 than the router constructors, `_ignore_` enum contents, and non-literal

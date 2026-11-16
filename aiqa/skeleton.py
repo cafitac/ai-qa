@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import json
 from collections import Counter
 from pathlib import Path
+
+import yaml
 
 from .contracts import InvalidInput, load_yaml, validate
 from .design import COVERING, Doc
@@ -139,14 +140,17 @@ def skeleton_file(design: Doc) -> Doc:
 
 def run_skeleton(design: Path, out: Path | None) -> int:
     doc = skeleton_file(validate("qa-design", load_yaml(design)))
-    text = (
-        json.dumps(validate("scenario-file", doc), indent=2, ensure_ascii=False) + "\n"
+    validate("scenario-file", doc)
+    # YAML keeps every code point readable by load_yaml (JSON escapes of control or
+    # non-BMP characters do not survive PyYAML); stdout stays ASCII-only.
+    dump = yaml.safe_dump(
+        doc, allow_unicode=out is not None, sort_keys=False, width=10**6
     )
     if out is None:
-        print(text, end="")
+        print(dump, end="")
     else:
         try:
-            out.write_text(text, encoding="utf-8")
+            out.write_text(dump, encoding="utf-8")
         except OSError as error:
             raise InvalidInput(
                 f"Cannot write output {out}: {error.strerror}"

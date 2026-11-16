@@ -6,9 +6,16 @@ import json
 import re
 
 import pytest
+import yaml
 
 from aiqa.cli import main as cli_main
-from aiqa.contracts import InvalidInput, scenario_links, validate
+from aiqa.contracts import (
+    InvalidInput,
+    load_yaml,
+    parse_yaml,
+    scenario_links,
+    validate,
+)
 from aiqa.design import check_linkage
 from aiqa.skeleton import expand, run_skeleton, skeleton_file
 
@@ -130,9 +137,9 @@ def test_rejects_unsound_references(tmp_path):
 
 def test_cli_round_trip(tmp_path, capsys):
     d = design()
-    d["matrix"][0]["expected"] = "Shows \U0001f600 and 한글"
+    d["matrix"][0]["expected"] = "Shows \U0001f600 한글 \x7f \x85 \u2028 end"
     path = tmp_path / "design.json"
-    path.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    path.write_text(yaml.safe_dump(d, allow_unicode=True), encoding="utf-8")
     spec = tmp_path / "spec.json"
     acs = [{"id": f"AC{i}", "scope": "in", "text": "Works"} for i in range(1, 4)]
     spec_doc = {"apiVersion": "ai-qa/spec/v1", "feature": d["feature"], "acs": acs}
@@ -147,4 +154,5 @@ def test_cli_round_trip(tmp_path, capsys):
     assert cli_main([*args, "--scenarios", str(out)]) == 0
     assert json.loads(capsys.readouterr().out)["ok"]
     assert run_skeleton(path, None) == 0
-    assert json.loads(capsys.readouterr().out) == skeleton_file(d)
+    assert parse_yaml(capsys.readouterr().out) == skeleton_file(d)
+    assert load_yaml(target) == skeleton_file(d)

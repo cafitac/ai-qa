@@ -9,7 +9,7 @@ from .ports import AgentContext, AgentOutput
 from .run import ScenarioResult, scenario_failure
 from .screenshots import is_screenshot
 from .storage import below_directory
-from .usecases import clip_text
+from .usecases import full_agent_text
 
 
 def navigation_urls(value: Any) -> list[str]:
@@ -83,7 +83,7 @@ class VerdictGate:
                 value["checks"], list
             ):
                 raise ValueError("Invalid verdict")
-            value["summary"] = clip_text(value["summary"])
+            full_agent_text(value["summary"])
             for check in value["checks"]:
                 if (
                     not isinstance(check, dict)
@@ -94,7 +94,7 @@ class VerdictGate:
                 check = cast(dict[str, Any], check)
                 if type(check["index"]) is not int:
                     raise ValueError("Invalid index")
-                check["observed"] = clip_text(check["observed"])
+                full_agent_text(check["observed"])
             if sorted(check["index"] for check in value["checks"]) != list(
                 range(len(scenario.expect))
             ):

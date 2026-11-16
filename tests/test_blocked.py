@@ -84,6 +84,13 @@ def test_persisted_blocked_only_run_is_reloaded_by_show(paths, capsys):
     assert "BLOCKED — Readiness probe reports not ready: web" in capsys.readouterr().out
 
 
+def test_agent_side_failure_still_asks_the_probe(paths):
+    uc = make(paths, {"web/test-0": "BLOCKED"}, lambda e: DOWN)
+    assert uc.execute("demo") == 6
+    first = uc.last_run.results[0]
+    assert (first.status, first.reason) == ("BLOCKED", "environment")
+
+
 def test_agent_say_so_alone_is_not_blocked(paths):
     uc = make(paths, {"web/test-0": "BLOCKED", "web/test-1": "FAILED"}, lambda e: UP)
     assert uc.execute("demo") == 1

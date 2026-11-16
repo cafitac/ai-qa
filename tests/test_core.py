@@ -922,6 +922,49 @@ def test_adapter_oserror(setup_run, monkeypatch, capsys, boundary):
     assert "private message" not in output
 
 
+@pytest.mark.parametrize("field", ["summary", "observed"])
+def test_secret_across_the_cut_is_redacted(setup_run, field):
+    value = {
+        "status": "FAILED",
+        "summary": "ok",
+        "checks": [{"index": 0, "ok": False, "observed": "Visible"}],
+    }
+    text = "x" * 480 + "ghp_" + "A" * 36
+    if field == "summary":
+        value["summary"] = text
+    else:
+        value["checks"][0]["observed"] = text
+
+    class Runner(FakeAgentRunner):
+        def run(self, scenario, context):
+            output = super().run(scenario, context)
+            if scenario.id != "test-0":
+                return output
+            return replace(output, result_text=json.dumps(value))
+
+    uc, _ = usecase(setup_run)
+    uc.agent_runner = Runner()
+    assert uc.execute("demo") == 6
+    first = uc.last_run.results[0]
+    assert (first.status, first.reason) == ("BLOCKED", "agent_error")
+    assert "ghp_" not in json.dumps(first.as_dict())
+
+
+def test_gate_reason_decides_status(setup_run):
+    from aiqa.usecases import JsonVerdictGate
+
+    class Gate(JsonVerdictGate):
+        def accept(self, scenario, output, transcript, files, caps):
+            result = super().accept(scenario, output, transcript, files, caps)
+            return replace(result, status="FAILED", reason="no_evidence")
+
+    uc, _ = usecase(setup_run, verdict_gate=Gate())
+    assert uc.execute("demo") == 6
+    assert {(r.status, r.reason) for r in uc.last_run.results} == {
+        ("BLOCKED", "no_evidence")
+    }
+
+
 @pytest.mark.parametrize("verdict", ["PASSED", "FAILED"])
 @pytest.mark.parametrize("field", ["summary", "observed"])
 def test_long_agent_text_is_truncated_not_protocol(setup_run, verdict, field):
@@ -1114,7 +1157,9 @@ def test_bad_agent_json_is_scenario_local(setup_run, bad):
 
 
 @pytest.mark.parametrize("field", ["summary", "expect", "observed"])
-@pytest.mark.parametrize("text", ["\ud800", "\x00", "\r", "\x7f", "\x85"])
+@pytest.mark.parametrize(
+    "text", ["\ud800", "\x00", "\r", "\x7f", "\x85", "x" * 600 + "\x00"]
+)
 def test_bad_agent_strings_are_scenario_local(setup_run, field, text):
     value = {
         "status": "PASSED",

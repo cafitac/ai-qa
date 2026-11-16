@@ -27,14 +27,16 @@ def check_run(mode, root, status=None):
     results = {r["scenario_id"]: r for r in run["results"]}
     scenarios = {r["id"]: r for r in report["scenarios"]}
     assert set(results) == set(scenarios)
-    assert all(
-        scenarios[key]["status"] == value["status"] for key, value in results.items()
+    assert all(  # qa-report/v1 projects BLOCKED to SKIPPED
+        scenarios[key]["status"]
+        == ("SKIPPED" if value["status"] == "BLOCKED" else value["status"])
+        for key, value in results.items()
     )
     seed = "frontend/seed-notes-listed"
     add = "frontend/add-note-shows-first"
     if mode == "B5":
         assert set(results) == {seed}
-        assert results[seed]["status"] == "FAILED"
+        assert results[seed]["status"] == "BLOCKED"
         assert results[seed]["reason"] in ("turn_cap", "timeout")
         print("B5: COMPLETED reason=" + results[seed]["reason"])
         return

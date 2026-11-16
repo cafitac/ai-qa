@@ -171,6 +171,7 @@ SPLIT_HEAD = "from fastapi import FastAPI\nfrom pydantic import BaseModel, Field
         ("StrictStr", True),
         ("typing.Text", True),
         ("EmailStr", True),
+        ("constr(min_length=1)", True),
         ("Optional[str]", True),
         ("typing.Optional['str']", True),
         ("Union[str, None]", True),

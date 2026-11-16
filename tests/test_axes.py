@@ -222,6 +222,7 @@ def test_limits_merge_in_pydantic_order(tmp_path: Path) -> None:
         "    b: Annotated[Annotated[str, Field(max_length=3)], Field(max_length=5)]\n"
         "    c: Annotated[str, Field(max_length=3)] = Field(max_length=MAX)\n"
         "    d: Annotated[str, Field(max_length=3)] = Field(max_length=None)\n"
+        "    e: Annotated[str, Field(max_length=3)] = Field(**opts)\n"
     )
     out = {
         c["subject"]: c["detail"]

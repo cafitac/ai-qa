@@ -270,7 +270,9 @@ class _Scan(ast.NodeVisitor):
             limits: dict[str, Any] = {}
             for call in calls:  # a later non-literal value or None makes the limit unknown, never a stale literal
                 for k in call.keywords:
-                    if k.arg in LIMITS:
+                    if k.arg is None:  # **opts may carry any limit
+                        limits.clear()
+                    elif k.arg in LIMITS:
                         if _plain(v := _lit(k.value)):
                             limits[str(k.arg)] = v
                         else:

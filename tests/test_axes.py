@@ -215,6 +215,22 @@ def test_length_split_key_and_detail_are_stable(tmp_path: Path) -> None:
         assert cell["detail"] == {"max_length": 5, "input": text}
 
 
+def test_limits_merge_in_pydantic_order(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        f"{SPLIT_HEAD}class M(BaseModel):\n"
+        "    a: Annotated[str, Field(max_length=3, min_length=1)] = Field(max_length=5)\n"
+        "    b: Annotated[Annotated[str, Field(max_length=3)], Field(max_length=5)]\n"
+        "    c: Annotated[str, Field(max_length=3)] = Field(max_length=MAX)\n"
+        "    d: Annotated[str, Field(max_length=3)] = Field(max_length=None)\n"
+    )
+    out = {
+        c["subject"]: c["detail"]
+        for c in extract_axes(tmp_path)["cells"]
+        if c["kind"] == "constraint"
+    }
+    assert out == {"M.a": {"max_length": 5, "min_length": 1}, "M.b": {"max_length": 5}}
+
+
 @pytest.mark.parametrize(
     ("body", "fields"),
     [
@@ -223,6 +239,7 @@ def test_length_split_key_and_detail_are_stable(tmp_path: Path) -> None:
         ("a: Annotated[str, Field(min_length=1), Field(max_length=5)]", {"M.a"}),
         ("a: 'Annotated[str, Field(max_length=5)]'", {"M.a"}),
         ("a: Optional[Annotated[str, Field(max_length=5)]] = None", {"M.a"}),
+        ("a: Annotated[str, StringConstraints(max_length=5)]", {"M.a"}),
         ("a: Annotated[list[str], Field(max_length=5)]", set()),
         ("a: Annotated[int, Field(max_length=5)]", set()),
         ("a: str = Field(min_length=1)", set()),

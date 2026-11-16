@@ -88,7 +88,10 @@ def _shape(a: ast.expr) -> tuple[bool, list[ast.Call]]:
         parts = inner[:1] if _name(a.value) == "Annotated" else inner
         if _name(a.value) == "Annotated":
             meta = [
-                m for m in inner[1:] if isinstance(m, ast.Call) and _name(m) in FIELDS
+                m
+                for m in inner[1:]
+                if isinstance(m, ast.Call)
+                and _name(m) in FIELDS | {"StringConstraints"}
             ]
     else:
         return _name(a) in STRINGS or (
@@ -100,9 +103,9 @@ def _shape(a: ast.expr) -> tuple[bool, list[ast.Call]]:
         if not (isinstance(p, ast.Constant) and p.value in (None, "None"))
     ]
     shapes = [_shape(p) for p in real]
-    return bool(real) and all(s for s, _ in shapes), meta + [
+    return bool(real) and all(s for s, _ in shapes), [
         m for _, ms in shapes for m in ms
-    ]
+    ] + meta
 
 
 def _name(node: ast.AST | None) -> str:
@@ -264,12 +267,14 @@ class _Scan(ast.NodeVisitor):
             )  # pydantic: Annotated metadata first, the assigned Field() wins
             if isinstance(s.value, ast.Call) and _name(s.value) in FIELDS:
                 calls.append(s.value)
-            limits = {
-                k.arg: v
-                for c in calls
-                for k in c.keywords
-                if k.arg in LIMITS and _plain(v := _lit(k.value))
-            }
+            limits: dict[str, Any] = {}
+            for call in calls:  # a later non-literal value or None makes the limit unknown, never a stale literal
+                for k in call.keywords:
+                    if k.arg in LIMITS:
+                        if _plain(v := _lit(k.value)):
+                            limits[str(k.arg)] = v
+                        else:
+                            limits.pop(str(k.arg), None)
             if limits:
                 field = f"{cls}.{ast.unparse(s.target)}"
                 self.add(s, "constraint", field, **limits)

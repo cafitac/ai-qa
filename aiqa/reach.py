@@ -34,7 +34,10 @@ def _get(value: object, key: str) -> object:
 
 
 def tool_calls(log: Path) -> Iterator[tuple[str, dict[str, Any]]]:
-    """`(tool name, input)` of every tool_use in a stream-json `agent.jsonl`; unreadable lines are skipped."""
+    """`(tool name, input)` of every tool_use in a stream-json `agent.jsonl` whose result did not fail; unreadable lines
+    are skipped. A failed type or click never reached the page, so replaying it would invent an input."""
+    uses: list[tuple[str, str, dict[str, Any]]] = []
+    failed: set[object] = set()
     for line in log.read_text(encoding="utf-8", errors="replace").split("\n"):
         try:
             event = parse_json(line)
@@ -42,9 +45,24 @@ def tool_calls(log: Path) -> Iterator[tuple[str, dict[str, Any]]]:
             continue
         content = _get(_get(event, "message"), "content")
         for block in cast(list[object], content) if isinstance(content, list) else []:
-            name, args = _get(block, "name"), _get(block, "input")
-            if _get(block, "type") == "tool_use" and isinstance(name, str):
-                yield name, cast(dict[str, Any], args) if isinstance(args, dict) else {}
+            name, args, kind = (
+                _get(block, "name"),
+                _get(block, "input"),
+                _get(block, "type"),
+            )
+            if kind == "tool_use" and isinstance(name, str):
+                uses.append(
+                    (
+                        str(_get(block, "id")),
+                        name,
+                        cast(dict[str, Any], args) if isinstance(args, dict) else {},
+                    )
+                )
+            elif kind == "tool_result" and _get(block, "is_error") is True:
+                failed.add(_get(block, "tool_use_id"))
+    for use_id, name, args in uses:
+        if use_id not in failed:
+            yield name, args
 
 
 def typed_inputs(log: Path) -> list[str]:
@@ -112,6 +130,12 @@ def reach(
     )
     if not (isinstance(spec.get("trim"), bool) and plain and compare):
         raise InvalidInput("The replay spec needs trim and a non-empty list compare")
+    request = spec.get("request")
+    if not (
+        isinstance(request, dict)
+        and isinstance(cast(dict[str, Any], request).get("json"), dict | list | str)
+    ):
+        raise InvalidInput("The replay spec needs a request with a json body")
     if not substitute(spec["request"]["json"], "")[1]:
         raise InvalidInput(f"request.json must hold {PLACEHOLDER!r}")
     rows: list[dict[str, Any]] = []

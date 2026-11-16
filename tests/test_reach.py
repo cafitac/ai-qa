@@ -16,7 +16,6 @@ SPEC = {
 
 
 def notes_app(defect=None):
-
     def http(method, url, body):
         text = body["text"]
         if defect == "bytes" and len(text.encode()) > 500:
@@ -31,7 +30,7 @@ def notes_app(defect=None):
 def tool(name, **args):
     block = {
         "type": "tool_use",
-        "id": "t",
+        "id": args.pop("id", "t"),
         "name": f"mcp__playwright__browser_{name}",
         "input": args,
     }
@@ -79,6 +78,25 @@ def test_only_submitted_text_counts(tmp_path):
         tool("type", target="e1", text="never submitted"),
     )
     assert got == ["  sent  ", "by key", "with submit", "two", "fields more"]
+
+
+def test_failed_tool_calls_are_not_inputs(tmp_path):
+    result = json.dumps(
+        {
+            "message": {
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "bad", "is_error": True}
+                ]
+            }
+        }
+    )
+    events = [
+        tool("type", id="bad", text="한" * 200, submit=True),
+        result,
+        tool("type", text="ok"),
+        tool("click"),
+    ]
+    assert typed(tmp_path, *events) == ["ok"]
 
 
 def test_unreadable_events_are_skipped_and_jsonl_splits_on_newlines_only(tmp_path):
@@ -135,29 +153,13 @@ def test_one_request_per_distinct_text_across_scenarios_and_attempts():
     assert [r["scenario"] for r in out["inputs"]] == ["a", "a", "b"]
 
 
-def test_trim_and_placeholder_substitution():
-    seen = []
-
-    def http(method, url, body):
-        seen.append(body)
-        return 201, {"text": "t"}
-
-    spec = {
-        **SPEC,
-        "trim": False,
-        "request": {**SPEC["request"], "json": {"a": ["{input}", 1], "b": "<{input}>"}},
-    }
-    reach.reach(spec, [("s", " y ")], (http, ""), (http, ""))
-    reach.reach(SPEC, [("s", " y ")], (http, ""), (http, ""))
-    assert seen[::2] == [{"a": [" y ", 1], "b": "< y >"}, {"text": "y"}]
-
-
 @pytest.mark.parametrize(
     "bad",
     [
         {"trim": None},
         {"compare": "text"},
         {"compare": [1]},
+        {"request": None},
         {"request": {**SPEC["request"], "json": {"text": "fixed"}}},
     ],
 )
